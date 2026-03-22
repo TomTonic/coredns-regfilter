@@ -189,3 +189,124 @@ func TestIntegrationWhitelistPrecedence(t *testing.T) {
 		t.Error("expected blacklist to match ads.example.com")
 	}
 }
+
+func TestRealWorldAdGuardExampleParseAndCompileSubset(t *testing.T) {
+	path := filepath.Join(testdataDir(), "Adguard_filter_example.txt")
+	logger := &testLogger{}
+
+	rules, err := filterlist.ParseFile(path, logger)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+	if len(rules) < 1000 {
+		t.Fatalf("expected substantial rule count from AdGuard example, got %d", len(rules))
+	}
+
+	wantPatterns := []string{
+		"illinformed-summer.com",
+		"superficial-burn.com",
+		"insensitiveshoweraudible.com",
+		"apitiny.net",
+	}
+	assertPatternsPresent(t, rules, wantPatterns)
+
+	subset := selectRulesByPattern(t, rules, wantPatterns)
+	dfa, err := automaton.CompileRules(subset, automaton.CompileOptions{MaxStates: 10000})
+	if err != nil {
+		t.Fatalf("CompileRules error: %v", err)
+	}
+
+	for _, pattern := range wantPatterns {
+		matched, _ := dfa.Match(pattern)
+		if !matched {
+			t.Errorf("expected compiled AdGuard subset to match %q", pattern)
+		}
+	}
+
+	for _, name := range []string{"example.org", "safe.example.com", "not-present.invalid"} {
+		matched, _ := dfa.Match(name)
+		if matched {
+			t.Errorf("expected compiled AdGuard subset not to match %q", name)
+		}
+	}
+}
+
+func TestRealWorldEasyListGermanyParseAndCompileSubset(t *testing.T) {
+	path := filepath.Join(testdataDir(), "easylistgermany_example.txt")
+	logger := &testLogger{}
+
+	rules, err := filterlist.ParseFile(path, logger)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+	if len(rules) < 100 {
+		t.Fatalf("expected meaningful rule count from EasyList Germany example, got %d", len(rules))
+	}
+	if len(logger.warnings) == 0 {
+		t.Fatal("expected unsupported constructs in EasyList Germany example to generate warnings")
+	}
+
+	wantPatterns := []string{
+		"adnx.de",
+		"bd742.com",
+		"cpg-cdn.com",
+		"f11-ads.com",
+		"active-tracking.de",
+	}
+	assertPatternsPresent(t, rules, wantPatterns)
+
+	subset := selectRulesByPattern(t, rules, wantPatterns)
+	dfa, err := automaton.CompileRules(subset, automaton.CompileOptions{MaxStates: 10000})
+	if err != nil {
+		t.Fatalf("CompileRules error: %v", err)
+	}
+
+	for _, pattern := range wantPatterns {
+		matched, _ := dfa.Match(pattern)
+		if !matched {
+			t.Errorf("expected compiled EasyList Germany subset to match %q", pattern)
+		}
+	}
+
+	for _, name := range []string{"focus.de", "example.org", "safe.example.com"} {
+		matched, _ := dfa.Match(name)
+		if matched {
+			t.Errorf("expected compiled EasyList Germany subset not to match %q", name)
+		}
+	}
+}
+
+func assertPatternsPresent(t *testing.T, rules []filterlist.Rule, patterns []string) {
+	t.Helper()
+	for _, pattern := range patterns {
+		found := false
+		for _, rule := range rules {
+			if rule.Pattern == pattern {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected pattern %q to be present in parsed rules", pattern)
+		}
+	}
+}
+
+func selectRulesByPattern(t *testing.T, rules []filterlist.Rule, patterns []string) []filterlist.Rule {
+	t.Helper()
+	selected := make([]filterlist.Rule, 0, len(patterns))
+	for _, pattern := range patterns {
+		found := false
+		for _, rule := range rules {
+			if rule.Pattern == pattern {
+				selected = append(selected, rule)
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected selectable pattern %q", pattern)
+		}
+	}
+	return selected
+}
