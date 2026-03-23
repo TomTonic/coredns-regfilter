@@ -1,26 +1,94 @@
 ---
+version: "2"
+
 run:
   timeout: 5m
+  relative-path-mode: gomod
+  modules-download-mode: readonly
+  tests: true
+  allow-parallel-runners: true
 
 linters:
+  default: standard
   enable:
-    - govet
-    - staticcheck
+    - bodyclose
+    - copyloopvar
+    - durationcheck
     - errcheck
-    - gosimple
-    - unused
-    - ineffassign
-    - revive
+    - errorlint
+    - gocritic
     - gosec
-
-linters-settings:
-  gosec:
-    excludes:
-      - G404  # weak random is fine for tests
+    - misspell
+    - noctx
+    - nolintlint
+    - perfsprint
+    - promlinter
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+    gosec:
+      excludes:
+        - G404 # weak randomness is acceptable in tests and non-crypto helpers
+      severity: medium
+      confidence: medium
+    govet:
+      enable:
+        - shadow
+    misspell:
+      locale: US
+      mode: restricted
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      enable-default-rules: true
+      severity: warning
+      directives:
+        - name: specify-disable-reason
+          severity: error
+    unconvert:
+      safe: true
+    unparam:
+      check-exported: false
+  exclusions:
+    generated: strict
+    warn-unused: true
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - noctx
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: true
+
+output:
+  formats:
+    text:
+      path: stdout
+      print-linter-name: true
+      print-issued-lines: true
+  sort-order:
+    - severity
+    - linter
+    - file
+
+severity:
+  default: warning
