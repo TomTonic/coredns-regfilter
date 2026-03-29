@@ -106,6 +106,9 @@ func (rf *RegFilter) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.
 
 	// Check whitelist first
 	if wl := rf.GetWhitelist(); wl != nil {
+		if rf.metrics != nil {
+			rf.metrics.WhitelistChecks.Inc()
+		}
 		if matched, _ := wl.Match(name); matched {
 			if rf.metrics != nil {
 				rf.metrics.WhitelistHits.Inc()
@@ -119,6 +122,9 @@ func (rf *RegFilter) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.
 
 	// Check blacklist
 	if bl := rf.GetBlacklist(); bl != nil {
+		if rf.metrics != nil {
+			rf.metrics.BlacklistChecks.Inc()
+		}
 		if matched, _ := bl.Match(name); matched {
 			if rf.metrics != nil {
 				rf.metrics.BlacklistHits.Inc()

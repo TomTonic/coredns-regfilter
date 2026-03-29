@@ -11,6 +11,12 @@ func TestNewRegistryWith(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	r := NewRegistryWith(reg)
 
+	if r.WhitelistChecks == nil {
+		t.Fatal("WhitelistChecks is nil")
+	}
+	if r.BlacklistChecks == nil {
+		t.Fatal("BlacklistChecks is nil")
+	}
 	if r.WhitelistHits == nil {
 		t.Fatal("WhitelistHits is nil")
 	}

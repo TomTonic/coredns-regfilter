@@ -7,6 +7,8 @@ import (
 
 // Registry holds all Prometheus metrics for the regfilter plugin.
 type Registry struct {
+	WhitelistChecks            prometheus.Counter
+	BlacklistChecks            prometheus.Counter
 	WhitelistHits              prometheus.Counter
 	BlacklistHits              prometheus.Counter
 	CompileErrors              prometheus.Counter
@@ -26,6 +28,18 @@ func NewRegistry() *Registry {
 // NewRegistryWith creates and registers all metrics with a custom registerer.
 func NewRegistryWith(reg prometheus.Registerer) *Registry {
 	r := &Registry{
+		WhitelistChecks: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "coredns",
+			Subsystem: "regfilter",
+			Name:      "whitelist_checks_total",
+			Help:      "Total number of queries checked against the whitelist DFA.",
+		}),
+		BlacklistChecks: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "coredns",
+			Subsystem: "regfilter",
+			Name:      "blacklist_checks_total",
+			Help:      "Total number of queries checked against the blacklist DFA.",
+		}),
 		WhitelistHits: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "coredns",
 			Subsystem: "regfilter",
@@ -85,6 +99,8 @@ func NewRegistryWith(reg prometheus.Registerer) *Registry {
 	}
 
 	reg.MustRegister(
+		r.WhitelistChecks,
+		r.BlacklistChecks,
 		r.WhitelistHits,
 		r.BlacklistHits,
 		r.CompileErrors,
