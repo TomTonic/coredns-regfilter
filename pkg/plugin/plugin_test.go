@@ -6,9 +6,12 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/tomtonic/coredns-regfilter/pkg/automaton"
 	"github.com/tomtonic/coredns-regfilter/pkg/filterlist"
+	rfmetrics "github.com/tomtonic/coredns-regfilter/pkg/metrics"
 )
 
 // mockResponseWriter captures the DNS response.
@@ -270,5 +273,143 @@ func TestNormalizeName(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("normalizeName(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func newMetrics(t *testing.T) (m *rfmetrics.Registry, promReg *prometheus.Registry) {
+	t.Helper()
+	promReg = prometheus.NewRegistry()
+	return rfmetrics.NewRegistryWith(promReg), promReg
+}
+
+func getMatchDurationCount(t *testing.T, promReg *prometheus.Registry, result string) uint64 {
+	t.Helper()
+	families, err := promReg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range families {
+		if f.GetName() == "coredns_regfilter_match_duration_seconds" {
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "result" && l.GetValue() == result {
+						return m.GetSummary().GetSampleCount()
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func TestServeDNSMatchDurationAccept(t *testing.T) {
+	m, promReg := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &RegFilter{
+		Next:    next,
+		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
+		metrics: m,
+	}
+	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("safe.example.com", dns.TypeA)
+	_, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cnt := getMatchDurationCount(t, promReg, "accept"); cnt != 1 {
+		t.Errorf("expected 1 accept observation, got %d", cnt)
+	}
+}
+
+func TestServeDNSMatchDurationReject(t *testing.T) {
+	m, promReg := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &RegFilter{
+		Next:    next,
+		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
+		metrics: m,
+	}
+	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("ads.example.com", dns.TypeA)
+	_, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cnt := getMatchDurationCount(t, promReg, "reject"); cnt != 1 {
+		t.Errorf("expected 1 reject observation, got %d", cnt)
+	}
+}
+
+func TestServeDNSMatchDurationPass(t *testing.T) {
+	m, promReg := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &RegFilter{
+		Next:    next,
+		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
+		metrics: m,
+	}
+	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("clean.example.com", dns.TypeA)
+	_, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cnt := getMatchDurationCount(t, promReg, "pass"); cnt != 1 {
+		t.Errorf("expected 1 pass observation, got %d", cnt)
+	}
+}
+
+func TestServeDNSWhitelistHitCounter(t *testing.T) {
+	m, _ := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &RegFilter{
+		Next:    next,
+		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
+		metrics: m,
+	}
+	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("safe.example.com", dns.TypeA)
+	_, _ = rf.ServeDNS(context.Background(), w, r)
+
+	var d dto.Metric
+	if err := m.WhitelistHits.Write(&d); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.GetCounter().GetValue(); got != 1 {
+		t.Errorf("WhitelistHits = %v, want 1", got)
+	}
+}
+
+func TestServeDNSBlacklistHitCounter(t *testing.T) {
+	m, _ := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &RegFilter{
+		Next:    next,
+		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
+		metrics: m,
+	}
+	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("ads.example.com", dns.TypeA)
+	_, _ = rf.ServeDNS(context.Background(), w, r)
+
+	var d dto.Metric
+	if err := m.BlacklistHits.Write(&d); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.GetCounter().GetValue(); got != 1 {
+		t.Errorf("BlacklistHits = %v, want 1", got)
 	}
 }

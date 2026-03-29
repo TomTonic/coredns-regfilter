@@ -36,6 +36,7 @@ type Config struct {
 	Debounce       time.Duration
 	Logger         Logger
 	OnUpdate       func(whitelist *automaton.DFA, blacklist *automaton.DFA)
+	OnCompile      func(label string, duration time.Duration)
 	MaxCompileTime time.Duration
 	MaxStates      int
 }
@@ -252,6 +253,11 @@ func (w *dirWatcher) compileDir(dir, label string) *automaton.DFA {
 
 	w.cfg.Logger.Infof("watcher: compiled %s DFA: %d rules, %d states in %v",
 		label, len(rules), dfa.StateCount(), elapsed)
+
+	if w.cfg.OnCompile != nil {
+		w.cfg.OnCompile(label, elapsed)
+	}
+
 	return dfa
 }
 

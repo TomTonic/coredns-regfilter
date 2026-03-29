@@ -99,6 +99,7 @@ func (rf *RegFilter) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
 	}
 
+	start := time.Now()
 	qname := r.Question[0].Name
 	name := normalizeName(qname)
 	qtype := r.Question[0].Qtype
@@ -108,6 +109,8 @@ func (rf *RegFilter) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.
 		if matched, _ := wl.Match(name); matched {
 			if rf.metrics != nil {
 				rf.metrics.WhitelistHits.Inc()
+				elapsed := time.Since(start).Seconds()
+				rf.metrics.MatchDuration.WithLabelValues("accept").Observe(elapsed)
 			}
 			log.Debugf("whitelist match: %s", name)
 			return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
@@ -119,6 +122,8 @@ func (rf *RegFilter) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.
 		if matched, _ := bl.Match(name); matched {
 			if rf.metrics != nil {
 				rf.metrics.BlacklistHits.Inc()
+				elapsed := time.Since(start).Seconds()
+				rf.metrics.MatchDuration.WithLabelValues("reject").Observe(elapsed)
 			}
 			log.Debugf("blacklist match: %s", name)
 			return rf.respondBlocked(w, r, qname, qtype)
@@ -126,6 +131,10 @@ func (rf *RegFilter) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.
 	}
 
 	// No match — forward to next plugin
+	if rf.metrics != nil {
+		elapsed := time.Since(start).Seconds()
+		rf.metrics.MatchDuration.WithLabelValues("pass").Observe(elapsed)
+	}
 	return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
 }
 
@@ -193,6 +202,13 @@ func (rf *RegFilter) StartWatcher() error {
 		Logger:         &pluginLogger{},
 		MaxCompileTime: rf.Config.CompileTimeout,
 		MaxStates:      rf.Config.MaxStates,
+		OnCompile: func(_ string, duration time.Duration) {
+			if rf.metrics != nil {
+				rf.metrics.CompileDuration.Observe(duration.Seconds())
+				rf.metrics.LastCompileTimestamp.SetToCurrentTime()
+				rf.metrics.LastCompileDurationSeconds.Set(duration.Seconds())
+			}
+		},
 		OnUpdate: func(wl *automaton.DFA, bl *automaton.DFA) {
 			rf.SetWhitelist(wl)
 			rf.SetBlacklist(bl)
