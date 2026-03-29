@@ -93,8 +93,10 @@ func ParseLine(line string) (Rule, error) {
 		return Rule{}, errSkip
 	}
 
-	// Skip comments
-	if line[0] == '!' || strings.HasPrefix(line, "[Adblock") || isCommentLine(line) {
+	// Skip comments: '!' prefix, '[Adblock' header, and '#' prefix (hosts-style comments).
+	// The '#' check must come before the non-network marker check because
+	// hosts-style comments like '# tracking ## info' contain '##' but are not rules.
+	if line[0] == '!' || line[0] == '#' || strings.HasPrefix(line, "[Adblock") {
 		return Rule{}, errSkip
 	}
 
@@ -244,21 +246,14 @@ func containsUnsupportedModifier(mods string) bool {
 		// We support "important" and "document" as no-ops for domain filters.
 		// Everything else is unsupported.
 		switch p {
-		case "important", "document", "all", "first-party", "1p", "third-party", "3p":
+		case "important", "document", "all", "first-party", "1p", "third-party", "3p",
+			"badfilter", "match-case", "popup":
 			continue
 		default:
 			return true
 		}
 	}
 	return false
-}
-
-func isCommentLine(line string) bool {
-	if !strings.HasPrefix(line, "#") {
-		return false
-	}
-
-	return !containsUnsupportedNonNetworkMarker(line)
 }
 
 func containsUnsupportedNonNetworkMarker(line string) bool {
