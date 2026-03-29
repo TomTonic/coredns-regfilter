@@ -175,6 +175,8 @@ All metrics are exported with the `coredns_regfilter_` prefix through the CoreDN
 
 | Metric | Type | Description |
 |--------|------|-------------|
+| `coredns_regfilter_whitelist_checks_total` | Counter | Number of queries evaluated against the whitelist DFA |
+| `coredns_regfilter_blacklist_checks_total` | Counter | Number of queries evaluated against the blacklist DFA |
 | `coredns_regfilter_whitelist_hits_total` | Counter | Number of queries accepted because the whitelist DFA matched |
 | `coredns_regfilter_blacklist_hits_total` | Counter | Number of queries blocked because the blacklist DFA matched |
 | `coredns_regfilter_compile_errors_total` | Counter | Counter reserved for DFA compile failures |
@@ -202,11 +204,26 @@ The `coredns_regfilter_match_duration_seconds` summary uses a `result` label wit
 
 ### Interpreting the Metrics
 
+- Use `whitelist_checks_total` and `blacklist_checks_total` as the denominator when you want match ratios per automaton.
 - Use `whitelist_hits_total` and `blacklist_hits_total` to understand policy decisions over time.
 - Use `compile_duration_seconds` and `last_compile_duration_seconds` to spot slow reloads.
 - Use `last_compile_timestamp_seconds` to verify that file changes are being picked up.
 - Use `match_duration_seconds` to watch lookup overhead on the request path.
 - The `whitelist_rules` and `blacklist_rules` gauges reflect the currently compiled automata after reload, which is more useful operationally than just counting raw source lines.
+
+Typical Prometheus ratios look like this:
+
+```promql
+rate(coredns_regfilter_whitelist_hits_total[5m])
+/
+rate(coredns_regfilter_whitelist_checks_total[5m])
+```
+
+```promql
+rate(coredns_regfilter_blacklist_hits_total[5m])
+/
+rate(coredns_regfilter_blacklist_checks_total[5m])
+```
 
 ## Development
 

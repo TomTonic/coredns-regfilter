@@ -302,6 +302,17 @@ func getMatchDurationCount(t *testing.T, promReg *prometheus.Registry, result st
 	return 0
 }
 
+func getCounterValue(t *testing.T, counter prometheus.Counter) float64 {
+	t.Helper()
+
+	var metric dto.Metric
+	if err := counter.Write(&metric); err != nil {
+		t.Fatal(err)
+	}
+
+	return metric.GetCounter().GetValue()
+}
+
 func TestServeDNSMatchDurationAccept(t *testing.T) {
 	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
@@ -382,16 +393,15 @@ func TestServeDNSWhitelistHitCounter(t *testing.T) {
 	r := makeQuery("safe.example.com", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
-	var d dto.Metric
-	if err := m.WhitelistHits.Write(&d); err != nil {
-		t.Fatal(err)
+	if got := getCounterValue(t, m.WhitelistChecks); got != 1 {
+		t.Errorf("WhitelistChecks = %v, want 1", got)
 	}
-	if got := d.GetCounter().GetValue(); got != 1 {
+	if got := getCounterValue(t, m.WhitelistHits); got != 1 {
 		t.Errorf("WhitelistHits = %v, want 1", got)
 	}
 }
 
-func TestServeDNSBlacklistHitCounter(t *testing.T) {
+func TestServeDNSBlacklistCheckAndHitCounters(t *testing.T) {
 	m, _ := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &RegFilter{
@@ -399,17 +409,43 @@ func TestServeDNSBlacklistHitCounter(t *testing.T) {
 		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
 		metrics: m,
 	}
+	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
 	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("ads.example.com", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
-	var d dto.Metric
-	if err := m.BlacklistHits.Write(&d); err != nil {
-		t.Fatal(err)
+	if got := getCounterValue(t, m.WhitelistChecks); got != 1 {
+		t.Errorf("WhitelistChecks = %v, want 1", got)
 	}
-	if got := d.GetCounter().GetValue(); got != 1 {
+	if got := getCounterValue(t, m.BlacklistChecks); got != 1 {
+		t.Errorf("BlacklistChecks = %v, want 1", got)
+	}
+	if got := getCounterValue(t, m.BlacklistHits); got != 1 {
 		t.Errorf("BlacklistHits = %v, want 1", got)
+	}
+}
+
+func TestServeDNSWhitelistHitSkipsBlacklistCheck(t *testing.T) {
+	m, _ := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &RegFilter{
+		Next:    next,
+		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
+		metrics: m,
+	}
+	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
+	rf.SetBlacklist(buildDFA(t, []string{"safe.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("safe.example.com", dns.TypeA)
+	_, _ = rf.ServeDNS(context.Background(), w, r)
+
+	if got := getCounterValue(t, m.WhitelistChecks); got != 1 {
+		t.Errorf("WhitelistChecks = %v, want 1", got)
+	}
+	if got := getCounterValue(t, m.BlacklistChecks); got != 0 {
+		t.Errorf("BlacklistChecks = %v, want 0", got)
 	}
 }
