@@ -167,3 +167,48 @@ func TestIsUnder(t *testing.T) {
 		}
 	}
 }
+
+func TestOnCompileCallback(t *testing.T) {
+	blDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(blDir, "test.txt"), []byte("||ads.example.com^\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	var mu sync.Mutex
+	var compileCalls int
+	var lastDuration time.Duration
+
+	stop, err := Start(&Config{
+		BlacklistDir: blDir,
+		Debounce:     50 * time.Millisecond,
+		Logger:       &testLogger{},
+		OnUpdate:     func(_ *automaton.DFA, _ *automaton.DFA) {},
+		OnCompile: func(label string, duration time.Duration) {
+			mu.Lock()
+			defer mu.Unlock()
+			compileCalls++
+			lastDuration = duration
+			if label != "blacklist" {
+				t.Errorf("expected label 'blacklist', got %q", label)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	t.Cleanup(func() {
+		if stopErr := stop(); stopErr != nil {
+			t.Errorf("stop error: %v", stopErr)
+		}
+	})
+
+	mu.Lock()
+	if compileCalls < 1 {
+		t.Error("expected at least 1 OnCompile call from initial compile")
+	}
+	if lastDuration <= 0 {
+		t.Errorf("expected positive compile duration, got %v", lastDuration)
+	}
+	mu.Unlock()
+}

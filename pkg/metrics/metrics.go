@@ -7,12 +7,15 @@ import (
 
 // Registry holds all Prometheus metrics for the regfilter plugin.
 type Registry struct {
-	WhitelistHits   prometheus.Counter
-	BlacklistHits   prometheus.Counter
-	CompileErrors   prometheus.Counter
-	CompileDuration prometheus.Histogram
-	WhitelistRules  prometheus.Gauge
-	BlacklistRules  prometheus.Gauge
+	WhitelistHits              prometheus.Counter
+	BlacklistHits              prometheus.Counter
+	CompileErrors              prometheus.Counter
+	CompileDuration            prometheus.Histogram
+	WhitelistRules             prometheus.Gauge
+	BlacklistRules             prometheus.Gauge
+	LastCompileTimestamp       prometheus.Gauge
+	LastCompileDurationSeconds prometheus.Gauge
+	MatchDuration              *prometheus.SummaryVec
 }
 
 // NewRegistry creates and registers all metrics with the default registerer.
@@ -60,6 +63,25 @@ func NewRegistryWith(reg prometheus.Registerer) *Registry {
 			Name:      "blacklist_rules",
 			Help:      "Current number of rules in the blacklist DFA.",
 		}),
+		LastCompileTimestamp: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "coredns",
+			Subsystem: "regfilter",
+			Name:      "last_compile_timestamp_seconds",
+			Help:      "Unix timestamp of the last successful DFA compilation.",
+		}),
+		LastCompileDurationSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "coredns",
+			Subsystem: "regfilter",
+			Name:      "last_compile_duration_seconds",
+			Help:      "Duration of the most recent DFA compilation in seconds.",
+		}),
+		MatchDuration: prometheus.NewSummaryVec(prometheus.SummaryOpts{
+			Namespace:  "coredns",
+			Subsystem:  "regfilter",
+			Name:       "match_duration_seconds",
+			Help:       "Duration of DNS query matching in seconds, by result.",
+			Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
+		}, []string{"result"}),
 	}
 
 	reg.MustRegister(
@@ -69,6 +91,9 @@ func NewRegistryWith(reg prometheus.Registerer) *Registry {
 		r.CompileDuration,
 		r.WhitelistRules,
 		r.BlacklistRules,
+		r.LastCompileTimestamp,
+		r.LastCompileDurationSeconds,
+		r.MatchDuration,
 	)
 
 	return r
