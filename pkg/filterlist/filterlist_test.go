@@ -450,6 +450,80 @@ func TestParseLineHostsInlineComment(t *testing.T) {
 	}
 }
 
+func TestParseLineIDNUmlautDomains(t *testing.T) {
+	// Internationalized domain names should be converted to Punycode.
+	tests := []struct {
+		input   string
+		pattern string
+		isAllow bool
+	}{
+		// AdGuard-style filters with Unicode domain names
+		{"||münchen.de^", "xn--mnchen-3ya.de", false},
+		{"||bücher.example.com^", "xn--bcher-kva.example.com", false},
+		{"||süddeutsche.de^", "xn--sddeutsche-9db.de", false},
+		// Exception rules with Unicode
+		{"@@||münchen.de^", "xn--mnchen-3ya.de", true},
+		// Already-encoded Punycode passes through unchanged
+		{"||xn--mnchen-3ya.de^", "xn--mnchen-3ya.de", false},
+		// Mixed subdomain with Umlaut
+		{"||ads.münchen.de^", "ads.xn--mnchen-3ya.de", false},
+		// Bare domain (no anchors)
+		{"münchen.de", "xn--mnchen-3ya.de", false},
+		// With modifiers
+		{"||münchen.de^$important", "xn--mnchen-3ya.de", false},
+	}
+	for _, tt := range tests {
+		rule, err := ParseLine(tt.input)
+		if err != nil {
+			t.Errorf("ParseLine(%q) unexpected error: %v", tt.input, err)
+			continue
+		}
+		if rule.Pattern != tt.pattern {
+			t.Errorf("ParseLine(%q) pattern = %q, want %q", tt.input, rule.Pattern, tt.pattern)
+		}
+		if rule.IsAllow != tt.isAllow {
+			t.Errorf("ParseLine(%q) isAllow = %v, want %v", tt.input, rule.IsAllow, tt.isAllow)
+		}
+	}
+}
+
+func TestParseLineIDNHostsStyle(t *testing.T) {
+	// Hosts-style entries with Unicode domain names
+	tests := []struct {
+		input   string
+		pattern string
+	}{
+		{"0.0.0.0 münchen.de", "xn--mnchen-3ya.de"},
+		{"127.0.0.1 bücher.example.com", "xn--bcher-kva.example.com"},
+	}
+	for _, tt := range tests {
+		rule, err := ParseLine(tt.input)
+		if err != nil {
+			t.Errorf("ParseLine(%q) unexpected error: %v", tt.input, err)
+			continue
+		}
+		if rule.Pattern != tt.pattern {
+			t.Errorf("ParseLine(%q) pattern = %q, want %q", tt.input, rule.Pattern, tt.pattern)
+		}
+	}
+}
+
+func TestParseLineIDNMatchesDNSQuery(t *testing.T) {
+	// End-to-end: a Unicode filter list entry must produce the same pattern
+	// that a DNS query would contain (Punycode).
+	runicode, err := ParseLine("||münchen.de^")
+	if err != nil {
+		t.Fatalf("ParseLine Unicode: %v", err)
+	}
+	rpuny, err := ParseLine("||xn--mnchen-3ya.de^")
+	if err != nil {
+		t.Fatalf("ParseLine Punycode: %v", err)
+	}
+	if runicode.Pattern != rpuny.Pattern {
+		t.Errorf("Unicode pattern %q != Punycode pattern %q", runicode.Pattern, rpuny.Pattern)
+	}
+}
+
 type testLogger struct {
 	warnFunc func(format string, args ...interface{})
 }
