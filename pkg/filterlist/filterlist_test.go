@@ -15,6 +15,7 @@ func TestParseLineSkip(t *testing.T) {
 		"   ",
 		"! This is a comment",
 		"# hosts comment",
+		"# comment with ## inside",
 		"[Adblock Plus 2.0]",
 	}
 	for _, line := range skips {
@@ -122,9 +123,6 @@ func TestParseLineHostsSkipLocalhost(t *testing.T) {
 
 func TestParseLineUnsupported(t *testing.T) {
 	unsupported := []string{
-		"##.ad-banner",
-		"#@#.ad-banner",
-		"#%#//scriptlet('abort-on-property-read', 'alert')",
 		"$$script[tag-content=\"banner\"]",
 		"example.com##.ad-banner",
 		"example.com#@#.ad-banner",
@@ -138,6 +136,22 @@ func TestParseLineUnsupported(t *testing.T) {
 		_, err := ParseLine(line)
 		if err == nil || errors.Is(err, errSkip) {
 			t.Errorf("ParseLine(%q) expected non-skip error, got %v", line, err)
+		}
+	}
+}
+
+func TestParseLineBareCosmeticRulesSkipped(t *testing.T) {
+	// Bare cosmetic rules starting with # are silently skipped (irrelevant for DNS).
+	skipped := []string{
+		"##.ad-banner",
+		"#@#.ad-banner",
+		"#%#//scriptlet('abort-on-property-read', 'alert')",
+		"###Ad_Win2day",
+	}
+	for _, line := range skipped {
+		_, err := ParseLine(line)
+		if !errors.Is(err, errSkip) {
+			t.Errorf("ParseLine(%q) = %v, want errSkip", line, err)
 		}
 	}
 }
@@ -158,8 +172,9 @@ func TestParseFileEasyListGermanyLogsUnsupportedNonNetworkRules(t *testing.T) {
 		t.Fatal("expected parsed rules from easylist germany example")
 	}
 
-	assertContainsWarning(t, warnings, "unsupported non-network rule: ###Ad_Win2day")
-	assertContainsWarning(t, warnings, "unsupported non-network rule: ##.Werbung")
+	// Bare cosmetic rules starting with # are silently skipped for DNS (no warning).
+	// Domain-prefixed cosmetic rules still produce warnings.
+	assertContainsWarning(t, warnings, "unsupported non-network rule: ping-timeout.de#@##Advertisements")
 	assertContainsWarning(t, warnings, "unsupported modifier in rule: @@||windowspro.de^$~third-party,xmlhttprequest")
 	assertContainsPattern(t, rules, "adnx.de")
 	assertContainsPattern(t, rules, "active-tracking.de")
@@ -262,6 +277,13 @@ func TestParseLineModifiersAllowed(t *testing.T) {
 		"||example.com^$first-party",
 		"||example.com^$third-party",
 		"||example.com^$important,document",
+		"||example.com^$badfilter",
+		"||example.com^$match-case",
+		"||example.com^$popup",
+		"||example.com^$important,badfilter",
+		"||example.com^$match-case,third-party",
+		"||example.com^$1p",
+		"||example.com^$3p",
 	}
 	for _, line := range allowed {
 		rule, err := ParseLine(line)
@@ -330,6 +352,101 @@ func TestParseFileMissing(t *testing.T) {
 	_, err := ParseFile("/nonexistent/file.txt", nil)
 	if err == nil {
 		t.Error("expected error for missing file")
+	}
+}
+
+func TestParseLineHashCommentsWithMarkers(t *testing.T) {
+	// Hosts-style comments that happen to contain ## or other cosmetic markers
+	// must be treated as comments, not as unsupported non-network rules.
+	comments := []string{
+		"# comment with ## inside",
+		"# tracking ## info",
+		"# example.com##.ad-banner",
+		"# this has #@# in it",
+		"# test #%# scriptlet",
+		"# $$script marker",
+		"#comment no space",
+	}
+	for _, line := range comments {
+		_, err := ParseLine(line)
+		if !errors.Is(err, errSkip) {
+			t.Errorf("ParseLine(%q) = %v, want errSkip (should be comment)", line, err)
+		}
+	}
+}
+
+func TestParseLineBadfilterModifier(t *testing.T) {
+	// $badfilter should be accepted as a no-op, not rejected.
+	tests := []struct {
+		input   string
+		pattern string
+		isAllow bool
+	}{
+		{"||tn.porngo.xxx^$badfilter", "tn.porngo.xxx", false},
+		{"||example.com^$badfilter", "example.com", false},
+		{"@@||example.com^$badfilter", "example.com", true},
+		{"||example.com^$important,badfilter", "example.com", false},
+	}
+	for _, tt := range tests {
+		rule, err := ParseLine(tt.input)
+		if err != nil {
+			t.Errorf("ParseLine(%q) unexpected error: %v", tt.input, err)
+			continue
+		}
+		if rule.Pattern != tt.pattern {
+			t.Errorf("ParseLine(%q) pattern = %q, want %q", tt.input, rule.Pattern, tt.pattern)
+		}
+		if rule.IsAllow != tt.isAllow {
+			t.Errorf("ParseLine(%q) isAllow = %v, want %v", tt.input, rule.IsAllow, tt.isAllow)
+		}
+	}
+}
+
+func TestParseLineTrailingDollar(t *testing.T) {
+	// A trailing $ with no modifiers should still parse the domain.
+	rule, err := ParseLine("||example.com^$")
+	if err != nil {
+		t.Fatalf("ParseLine(\"||example.com^$\") unexpected error: %v", err)
+	}
+	if rule.Pattern != "example.com" {
+		t.Errorf("pattern = %q, want \"example.com\"", rule.Pattern)
+	}
+}
+
+func TestParseLineNegatedModifiers(t *testing.T) {
+	// Negated modifiers like $~third-party should be rejected.
+	unsupported := []string{
+		"||example.com^$~third-party",
+		"||example.com^$~third-party,xmlhttprequest",
+		"||example.com^$script,domain=other.com",
+	}
+	for _, line := range unsupported {
+		_, err := ParseLine(line)
+		if err == nil || errors.Is(err, errSkip) {
+			t.Errorf("ParseLine(%q) expected non-skip error for negated modifier, got %v", line, err)
+		}
+	}
+}
+
+func TestParseLineMultiDomainHosts(t *testing.T) {
+	// Hosts files can list multiple domains; we take the first one.
+	rule, err := ParseLine("0.0.0.0 first.example.com second.example.com")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rule.Pattern != "first.example.com" {
+		t.Errorf("pattern = %q, want \"first.example.com\"", rule.Pattern)
+	}
+}
+
+func TestParseLineHostsInlineComment(t *testing.T) {
+	// Hosts files often have inline comments after the domain.
+	rule, err := ParseLine("0.0.0.0 tracker.example.com # block tracker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rule.Pattern != "tracker.example.com" {
+		t.Errorf("pattern = %q, want \"tracker.example.com\"", rule.Pattern)
 	}
 }
 
