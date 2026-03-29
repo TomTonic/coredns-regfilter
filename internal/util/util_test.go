@@ -54,3 +54,32 @@ func TestIsValidDNSName(t *testing.T) {
 		}
 	}
 }
+
+func TestToASCII(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Pure ASCII passes through unchanged
+		{"example.com", "example.com"},
+		{"sub.example.com", "sub.example.com"},
+		// German Umlauts
+		{"münchen.de", "xn--mnchen-3ya.de"},
+		{"bücher.example.com", "xn--bcher-kva.example.com"},
+		{"süddeutsche.de", "xn--sddeutsche-9db.de"},
+		// Mixed: subdomain with Umlaut
+		{"ads.münchen.de", "ads.xn--mnchen-3ya.de"},
+		// Other scripts
+		{"例え.jp", "xn--r8jz45g.jp"},
+	}
+	for _, tt := range tests {
+		got, err := ToASCII(tt.input)
+		if err != nil {
+			t.Errorf("ToASCII(%q) error: %v", tt.input, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("ToASCII(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

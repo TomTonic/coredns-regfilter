@@ -163,6 +163,15 @@ func tryParseHosts(line string, isAllow bool) (Rule, error) {
 	// but a production version could emit multiple rules).
 	domain := strings.ToLower(fields[1])
 
+	// Convert internationalized domain names (IDN) to Punycode.
+	if needsIDNConversion(domain) {
+		ascii, err := util.ToASCII(domain)
+		if err != nil {
+			return Rule{}, errNotHosts
+		}
+		domain = ascii
+	}
+
 	// Skip localhost entries
 	if domain == "localhost" || domain == "localhost.localdomain" ||
 		domain == "local" || domain == "broadcasthost" ||
@@ -214,6 +223,17 @@ func parseAdGuardPattern(s string) (string, error) {
 	}
 
 	s = strings.ToLower(s)
+
+	// Convert internationalized domain names (IDN) to Punycode (ASCII).
+	// This allows filter lists to use Unicode domains like "münchen.de"
+	// which will be converted to "xn--mnchen-3ya.de" to match DNS queries.
+	if needsIDNConversion(s) {
+		ascii, err := util.ToASCII(s)
+		if err != nil {
+			return "", fmt.Errorf("IDN conversion failed for %s: %w", truncate(s), err)
+		}
+		s = ascii
+	}
 
 	// Check for path components — we only handle domain filters
 	if strings.ContainsAny(s, "/:?=&") {
@@ -288,4 +308,15 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:truncateLimit] + "..."
+}
+
+// needsIDNConversion returns true if s contains non-ASCII characters that
+// may represent an internationalized domain name requiring Punycode conversion.
+func needsIDNConversion(s string) bool {
+	for _, r := range s {
+		if r > 0x7F {
+			return true
+		}
+	}
+	return false
 }

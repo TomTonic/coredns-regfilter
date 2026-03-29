@@ -2,7 +2,11 @@
 // safe string handling used throughout the regfilter project.
 package util
 
-import "strings"
+import (
+	"strings"
+
+	"golang.org/x/net/idna"
+)
 
 // NormalizeDomain lowercases and removes a trailing dot from a DNS name.
 func NormalizeDomain(name string) string {
@@ -30,4 +34,11 @@ func IsValidDNSName(name string) bool {
 		}
 	}
 	return true
+}
+
+// ToASCII converts an internationalized domain name to its ASCII (Punycode)
+// representation. If the input is already pure ASCII it is returned unchanged.
+// Uses the IDNA Lookup profile (RFC 5891 Section 5).
+func ToASCII(name string) (string, error) {
+	return idna.Lookup.ToASCII(name)
 }

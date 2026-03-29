@@ -26,6 +26,8 @@ func FuzzParseLine(f *testing.F) {
 		"@@example.com",
 		"ads",
 		"||example.com/path^",
+		"||münchen.de^",
+		"0.0.0.0 bücher.example.com",
 	}
 	for _, s := range seeds {
 		f.Add(s)
