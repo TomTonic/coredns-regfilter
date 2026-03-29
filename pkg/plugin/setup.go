@@ -18,6 +18,8 @@ func init() {
 }
 
 func setup(c *caddy.Controller) error {
+	log.Infof("regfilter %s", readBuildInfo())
+
 	cfg, err := parseConfig(c)
 	if err != nil {
 		return plugin.Error("regfilter", err)
