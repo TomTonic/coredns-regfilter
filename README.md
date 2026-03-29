@@ -1,6 +1,15 @@
 # coredns-regfilter
 
-A CoreDNS plugin that filters DNS queries using compiled DFA (Deterministic Finite Automaton) matching against whitelist and blacklist filter lists.
+`coredns-regfilter` is a CoreDNS plugin that filters DNS queries against compiled deterministic finite automata (DFAs) built from whitelist and blacklist filter lists. It is designed for DNS-layer blocking of domain-based rules with predictable lookup latency and live reload support.
+
+The plugin loads host-oriented rules from supported filter list formats, compiles them into DFAs, and evaluates each DNS question in this order:
+
+1. Normalize the queried name.
+2. Check the whitelist DFA first.
+3. Check the blacklist DFA second.
+4. Forward or block based on the configured action.
+
+That makes whitelist precedence explicit and keeps per-query matching on the hot path inexpensive.
 
 ## Features
 
@@ -12,6 +21,15 @@ A CoreDNS plugin that filters DNS queries using compiled DFA (Deterministic Fini
 - **Observability**: Prometheus metrics and structured logging
 - **CLI tool**: Offline validation, matching, and DOT graph export
 
+## How It Works
+
+- Filter files are read from dedicated whitelist and blacklist directories.
+- Supported rules are normalized into domain patterns and compiled into DFAs.
+- The active DFAs are swapped atomically after a successful recompilation.
+- Filesystem changes trigger debounced recompilation, so updates can be applied without restarting CoreDNS.
+
+This project intentionally focuses on DNS-relevant host matching. Browser-only rule semantics such as cosmetic filtering, request-type modifiers, or path-based matching are out of scope.
+
 ## Quick Start
 
 ### Build
@@ -20,10 +38,14 @@ A CoreDNS plugin that filters DNS queries using compiled DFA (Deterministic Fini
 make build
 ```
 
+This produces the helper CLI at `./build/regfilter-check`. If you are integrating the plugin into a custom CoreDNS build, make sure the `regfilter` plugin is included in that binary.
+
 ### Corefile Configuration
 
 ```
 . {
+    prometheus :9153
+
     regfilter {
         whitelist_dir /etc/coredns/whitelist.d
         blacklist_dir /etc/coredns/blacklist.d
@@ -31,9 +53,16 @@ make build
         debounce 300ms
         max_states 200000
     }
+
     forward . 8.8.8.8
 }
 ```
+
+In that configuration:
+
+- `prometheus` exposes the metrics described below.
+- `regfilter` evaluates queries before they are forwarded upstream.
+- `whitelist_dir` takes precedence over `blacklist_dir` when the same domain matches both sets.
 
 ### CLI Tool
 
@@ -48,6 +77,8 @@ make build
 ./build/regfilter-check dump-dot --blacklist testdata/filterlists/blacklist --out whitelist.dot,blacklist.dot
 ```
 
+The CLI is useful for validating large lists before deploying them into CoreDNS, checking whether a particular name matches, and inspecting the generated automata when you need to troubleshoot rule behavior.
+
 ## Supported Filter Syntax
 
 | Syntax | Example | Description |
@@ -57,7 +88,9 @@ make build
 | Wildcard | `\|\|*.ads.example.com^` | Block subdomain pattern |
 | Hosts entry | `0.0.0.0 example.com` | Block via hosts format |
 
-## ABP and EasyList Compatibility
+The supported subset is intentionally conservative. If a rule cannot be reduced to a domain-level decision at DNS time, it is skipped rather than partially interpreted.
+
+## ABP, EasyList, and AdGuard Compatibility
 
 This project intentionally implements a strict, DNS-oriented subset of Adblock Plus, EasyList, and AdGuard syntax. The parser is designed to extract host-based network rules that can be compiled into DFAs for domain matching. It does not attempt full browser-side filter semantics.
 
@@ -71,7 +104,7 @@ This project intentionally implements a strict, DNS-oriented subset of Adblock P
 | Hosts file entries | `0.0.0.0 example.com`, `127.0.0.1 example.com` | Parsed as blocking rules |
 | Selected no-op modifiers | `\|\|example.com^$important`, `\|\|example.com^$document`, `\|\|example.com^$all`, `\|\|example.com^$third-party` | Domain part is kept; modifier semantics are ignored |
 
-### Unsupported and logged
+### Skipped and logged
 
 | Rule family | Real-world examples | Why it is unsupported |
 |-------------|---------------------|------------------------|
@@ -116,6 +149,17 @@ Those tests assert that:
 | `compile_timeout` | `30s` | Maximum compile duration |
 | `ttl` | `3600` | TTL for blocked responses (nullip) |
 
+### Configuration Notes
+
+- At least one of `whitelist_dir` or `blacklist_dir` should point to a directory with readable filter files.
+- `action nxdomain` returns NXDOMAIN for blocked queries.
+- `action refuse` returns REFUSED for blocked queries.
+- `action nullip` returns synthetic `A` and `AAAA` answers for address lookups, and falls back to NXDOMAIN for other query types.
+- `nullip` configures the IPv4 sinkhole address.
+- `nullip6` configures the IPv6 sinkhole address.
+- `ttl` is only relevant for `nullip` answers.
+- `debounce`, `max_states`, and `compile_timeout` are operational safeguards for large or volatile filter sets.
+
 ## Query Flow
 
 1. Normalize query name (lowercase, remove trailing dot)
@@ -125,14 +169,44 @@ Those tests assert that:
 
 ## Metrics
 
+All metrics are exported with the `coredns_regfilter_` prefix through the CoreDNS Prometheus endpoint.
+
+### Counters and Gauges
+
 | Metric | Type | Description |
 |--------|------|-------------|
-| `coredns_regfilter_whitelist_hits_total` | Counter | Whitelist matches |
-| `coredns_regfilter_blacklist_hits_total` | Counter | Blacklist matches |
-| `coredns_regfilter_compile_errors_total` | Counter | Compile failures |
-| `coredns_regfilter_compile_duration_seconds` | Histogram | Compile time |
-| `coredns_regfilter_whitelist_rules` | Gauge | Current whitelist rule count |
-| `coredns_regfilter_blacklist_rules` | Gauge | Current blacklist rule count |
+| `coredns_regfilter_whitelist_hits_total` | Counter | Number of queries accepted because the whitelist DFA matched |
+| `coredns_regfilter_blacklist_hits_total` | Counter | Number of queries blocked because the blacklist DFA matched |
+| `coredns_regfilter_compile_errors_total` | Counter | Counter reserved for DFA compile failures |
+| `coredns_regfilter_whitelist_rules` | Gauge | Current size of the compiled whitelist automaton, updated on reload |
+| `coredns_regfilter_blacklist_rules` | Gauge | Current size of the compiled blacklist automaton, updated on reload |
+| `coredns_regfilter_last_compile_timestamp_seconds` | Gauge | Unix timestamp of the most recent successful compilation |
+| `coredns_regfilter_last_compile_duration_seconds` | Gauge | Duration in seconds of the most recent successful compilation |
+
+### Histograms and Summaries
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `coredns_regfilter_compile_duration_seconds` | Histogram | Distribution of DFA compilation durations across reloads |
+| `coredns_regfilter_match_duration_seconds` | Summary | Distribution of query matching latency, labeled by result |
+
+### `match_duration_seconds` Labels
+
+The `coredns_regfilter_match_duration_seconds` summary uses a `result` label with the following values:
+
+| Label value | Meaning |
+|-------------|---------|
+| `accept` | The query matched the whitelist and was passed to the next plugin |
+| `reject` | The query matched the blacklist and was blocked |
+| `pass` | No rule matched and the query was forwarded unchanged |
+
+### Interpreting the Metrics
+
+- Use `whitelist_hits_total` and `blacklist_hits_total` to understand policy decisions over time.
+- Use `compile_duration_seconds` and `last_compile_duration_seconds` to spot slow reloads.
+- Use `last_compile_timestamp_seconds` to verify that file changes are being picked up.
+- Use `match_duration_seconds` to watch lookup overhead on the request path.
+- The `whitelist_rules` and `blacklist_rules` gauges reflect the currently compiled automata after reload, which is more useful operationally than just counting raw source lines.
 
 ## Development
 

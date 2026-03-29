@@ -10,29 +10,29 @@ into minimized DFAs, and uses those DFAs for O(n) matching on every DNS query.
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌───────────┐     ┌──────────┐
+┌──────────────┐      ┌──────────────┐     ┌────────────┐      ┌──────────┐
 │ Filter Files │────▶│ blockloader  │────▶│ filterlist │────▶│  Rules   │
-│ (directory)  │     │ LoadDirectory│     │ ParseFile  │     │ []Rule   │
-└─────────────┘     └──────────────┘     └───────────┘     └────┬─────┘
-                                                                 │
-                                                                 ▼
-                                                          ┌──────────────┐
-                                                          │  automaton   │
-                                                          │ CompileRules │
-                                                          └──────┬───────┘
-                                                                 │
-                    ┌──────────────┐                              ▼
-                    │   watcher    │                       ┌──────────────┐
+│ (directory)  │      │ LoadDirectory│     │ ParseFile  │      │ []Rule   │
+└──────────────┘      └──────────────┘     └────────────┘      └────┬─────┘
+                                                                    │
+                                                                    ▼
+                                                             ┌──────────────┐
+                                                             │  automaton   │
+                                                             │ CompileRules │
+                                                             └──────┬───────┘
+                                                                    │
+                    ┌──────────────┐                                ▼
+                    │   watcher    │                        ┌──────────────┐
                     │  (fsnotify)  │──── OnUpdate ───────▶ │  DFA (min)   │
-                    └──────────────┘                       └──────┬───────┘
-                                                                 │
-                                                          atomic.Value
-                                                                 │
-                                                                 ▼
-                                                          ┌──────────────┐
-                                                          │   plugin     │
-                                                          │  ServeDNS    │
-                                                          └──────────────┘
+                    └──────────────┘                        └──────┬───────┘
+                                                                   │
+                                                              atomic.Value
+                                                                   │
+                                                                   ▼
+                                                            ┌──────────────┐
+                                                            │   plugin     │
+                                                            │  ServeDNS    │
+                                                            └──────────────┘
 ```
 
 ## Compilation Pipeline
