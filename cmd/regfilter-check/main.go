@@ -5,12 +5,13 @@
 //
 //	regfilter-check validate --whitelist DIR --blacklist DIR
 //	regfilter-check match --whitelist DIR --blacklist DIR --name example.com
-//	regfilter-check dump-dot --whitelist DIR --blacklist DIR --out whitelist.dot blacklist.dot
+//	regfilter-check dump-dot --whitelist DIR --blacklist DIR --out whitelist.dot,blacklist.dot
 package main
 
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -20,29 +21,36 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run dispatches a CLI subcommand and returns the process exit code.
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		usage(stderr)
+		return 1
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "validate":
-		cmdValidate(os.Args[2:])
+		return cmdValidate(args[1:], stdout, stderr)
 	case "match":
-		cmdMatch(os.Args[2:])
+		return cmdMatch(args[1:], stdout, stderr)
 	case "dump-dot":
-		cmdDumpDot(os.Args[2:])
+		return cmdDumpDot(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
-		usage()
+		usage(stderr)
+		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
-		usage()
-		os.Exit(1)
+		writef(stderr, "unknown command: %s\n\n", args[0])
+		usage(stderr)
+		return 1
 	}
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, `regfilter-check — offline filter list validator and debugger
+// usage prints the top-level command help text.
+func usage(stderr io.Writer) {
+	writeln(stderr, `regfilter-check — offline filter list validator and debugger
 
 Commands:
   validate   Load directories, compile DFAs, print summary
@@ -57,26 +65,36 @@ Match-specific:
   --name DOMAIN      Domain name to check
 
 Dump-dot-specific:
-  --out WL.dot BL.dot   Output file paths (default: whitelist.dot blacklist.dot)`)
+	--out WL.dot,BL.dot   Output file paths (default: whitelist.dot,blacklist.dot)`)
 }
 
-type cliLogger struct{}
-
-func (cliLogger) Warnf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, "WARN: "+format+"\n", args...)
+// cliLogger adapts blockloader warnings to the CLI stderr stream.
+type cliLogger struct {
+	stderr          io.Writer
+	suppressSummary bool
 }
 
-func cmdValidate(args []string) {
-	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+// Warnf writes parser and loader warnings to stderr for CLI execution paths.
+func (l cliLogger) Warnf(format string, args ...interface{}) {
+	if l.suppressSummary && strings.HasPrefix(format, "blockloader: loaded ") {
+		return
+	}
+	writef(l.stderr, "WARN: "+format+"\n", args...)
+}
+
+// cmdValidate loads configured directories and reports compile success or failure.
+func cmdValidate(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	wlDir := fs.String("whitelist", "", "whitelist directory")
 	blDir := fs.String("blacklist", "", "blacklist directory")
 	maxStates := fs.Int("max-states", 200000, "maximum DFA states")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "validate parse error: %v\n", err)
-		os.Exit(1)
+		writef(stderr, "validate parse error: %v\n", err)
+		return 1
 	}
 
-	logger := cliLogger{}
+	logger := cliLogger{stderr: stderr}
 	exitCode := 0
 
 	for _, item := range []struct {
@@ -87,53 +105,55 @@ func cmdValidate(args []string) {
 		{"blacklist", *blDir},
 	} {
 		if item.dir == "" {
-			fmt.Printf("[%s] no directory specified, skipping\n", item.label)
+			writef(stdout, "[%s] no directory specified, skipping\n", item.label)
 			continue
 		}
 
-		fmt.Printf("[%s] loading %s...\n", item.label, item.dir)
+		writef(stdout, "[%s] loading %s...\n", item.label, item.dir)
 		rules, err := blockloader.LoadDirectory(item.dir, &logger)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] ERROR: %v\n", item.label, err)
+			writef(stderr, "[%s] ERROR: %v\n", item.label, err)
 			exitCode = 1
 			continue
 		}
 
-		fmt.Printf("[%s] parsed %d rules\n", item.label, len(rules))
+		writef(stdout, "[%s] parsed %d rules\n", item.label, len(rules))
 		if len(rules) == 0 {
 			continue
 		}
 
-		fmt.Printf("[%s] compiling DFA...\n", item.label)
+		writef(stdout, "[%s] compiling DFA...\n", item.label)
 		dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: *maxStates})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] COMPILE ERROR: %v\n", item.label, err)
+			writef(stderr, "[%s] COMPILE ERROR: %v\n", item.label, err)
 			exitCode = 1
 			continue
 		}
-		fmt.Printf("[%s] DFA compiled: %d states\n", item.label, dfa.StateCount())
+		writef(stdout, "[%s] DFA compiled: %d states\n", item.label, dfa.StateCount())
 	}
 
-	os.Exit(exitCode)
+	return exitCode
 }
 
-func cmdMatch(args []string) {
-	fs := flag.NewFlagSet("match", flag.ExitOnError)
+// cmdMatch evaluates a single domain name against the loaded allow and deny sets.
+func cmdMatch(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("match", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	wlDir := fs.String("whitelist", "", "whitelist directory")
 	blDir := fs.String("blacklist", "", "blacklist directory")
 	name := fs.String("name", "", "domain name to check")
 	maxStates := fs.Int("max-states", 200000, "maximum DFA states")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "match parse error: %v\n", err)
-		os.Exit(1)
+		writef(stderr, "match parse error: %v\n", err)
+		return 1
 	}
 
 	if *name == "" {
-		fmt.Fprintln(os.Stderr, "error: --name is required")
-		os.Exit(1)
+		writeln(stderr, "error: --name is required")
+		return 1
 	}
 
-	logger := cliLogger{}
+	logger := cliLogger{stderr: stderr, suppressSummary: true}
 	normalized := util.NormalizeDomain(*name)
 
 	var wlDFA, blDFA *automaton.DFA
@@ -141,11 +161,11 @@ func cmdMatch(args []string) {
 	if *wlDir != "" {
 		rules, err := blockloader.LoadDirectory(*wlDir, &logger)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "whitelist load error: %v\n", err)
+			writef(stderr, "whitelist load error: %v\n", err)
 		} else if len(rules) > 0 {
 			dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: *maxStates})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "whitelist compile error: %v\n", err)
+				writef(stderr, "whitelist compile error: %v\n", err)
 			} else {
 				wlDFA = dfa
 			}
@@ -155,47 +175,50 @@ func cmdMatch(args []string) {
 	if *blDir != "" {
 		rules, err := blockloader.LoadDirectory(*blDir, &logger)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "blacklist load error: %v\n", err)
+			writef(stderr, "blacklist load error: %v\n", err)
 		} else if len(rules) > 0 {
 			dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: *maxStates})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "blacklist compile error: %v\n", err)
+				writef(stderr, "blacklist compile error: %v\n", err)
 			} else {
 				blDFA = dfa
 			}
 		}
 	}
 
-	fmt.Printf("checking: %s\n", normalized)
+	writef(stdout, "checking: %s\n", normalized)
 
 	if wlDFA != nil {
 		matched, ruleIDs := wlDFA.Match(normalized)
 		if matched {
-			fmt.Printf("result: WHITELISTED (rules: %v)\n", ruleIDs)
-			return
+			writef(stdout, "result: WHITELISTED (rules: %v)\n", ruleIDs)
+			return 0
 		}
 	}
 
 	if blDFA != nil {
 		matched, ruleIDs := blDFA.Match(normalized)
 		if matched {
-			fmt.Printf("result: BLACKLISTED (rules: %v)\n", ruleIDs)
-			os.Exit(1)
+			writef(stdout, "result: BLACKLISTED (rules: %v)\n", ruleIDs)
+			return 1
 		}
 	}
 
-	fmt.Println("result: ALLOWED (no match)")
+	writeln(stdout, "result: ALLOWED (no match)")
+	return 0
 }
 
-func cmdDumpDot(args []string) {
-	fs := flag.NewFlagSet("dump-dot", flag.ExitOnError)
+// cmdDumpDot exports compiled DFAs into Graphviz DOT files for inspection.
+func cmdDumpDot(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("dump-dot", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	wlDir := fs.String("whitelist", "", "whitelist directory")
 	blDir := fs.String("blacklist", "", "blacklist directory")
 	out := fs.String("out", "whitelist.dot,blacklist.dot", "output files (comma-separated)")
 	maxStates := fs.Int("max-states", 200000, "maximum DFA states")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "dump-dot parse error: %v\n", err)
-		os.Exit(1)
+		writef(stderr, "dump-dot parse error: %v\n", err)
+		return 1
 	}
 
 	outFiles := strings.SplitN(*out, ",", 2)
@@ -208,7 +231,7 @@ func cmdDumpDot(args []string) {
 		blOut = strings.TrimSpace(outFiles[1])
 	}
 
-	logger := cliLogger{}
+	logger := cliLogger{stderr: stderr, suppressSummary: true}
 
 	for _, item := range []struct {
 		label  string
@@ -224,29 +247,44 @@ func cmdDumpDot(args []string) {
 
 		rules, err := blockloader.LoadDirectory(item.dir, &logger)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] load error: %v\n", item.label, err)
+			writef(stderr, "[%s] load error: %v\n", item.label, err)
 			continue
 		}
 		if len(rules) == 0 {
-			fmt.Printf("[%s] no rules, skipping DOT output\n", item.label)
+			writef(stdout, "[%s] no rules, skipping DOT output\n", item.label)
 			continue
 		}
 
 		dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: *maxStates})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] compile error: %v\n", item.label, err)
+			writef(stderr, "[%s] compile error: %v\n", item.label, err)
 			continue
 		}
 
 		f, err := os.Create(item.output)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] create %s: %v\n", item.label, item.output, err)
+			writef(stderr, "[%s] create %s: %v\n", item.label, item.output, err)
 			continue
 		}
 		if err := dfa.DumpDot(f); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] dump error: %v\n", item.label, err)
+			writef(stderr, "[%s] dump error: %v\n", item.label, err)
 		}
-		f.Close()
-		fmt.Printf("[%s] DOT written to %s\n", item.label, item.output)
+		if err := f.Close(); err != nil {
+			writef(stderr, "[%s] close %s: %v\n", item.label, item.output, err)
+			continue
+		}
+		writef(stdout, "[%s] DOT written to %s\n", item.label, item.output)
 	}
+
+	return 0
+}
+
+// writef ignores best-effort CLI write errors after formatting output.
+func writef(w io.Writer, format string, args ...interface{}) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+// writeln ignores best-effort CLI line write errors.
+func writeln(w io.Writer, text string) {
+	_, _ = fmt.Fprintln(w, text)
 }
