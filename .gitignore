@@ -15,6 +15,7 @@ build/
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
+!/.github/workflows/coverage.yml
 *.coverprofile
 profile.cov
 
