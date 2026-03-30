@@ -41,8 +41,12 @@ func init() {
 	}
 }
 
-// RuneToIndex maps a DNS character to its transition-array index (0–37).
-// Returns -1 for characters outside the DNS alphabet.
+// RuneToIndex maps r to its DFA transition index.
+//
+// The r parameter must be a lowercase DNS character from the supported
+// alphabet a-z, 0-9, '-', or '.'. The return value is the array index used by
+// DFAState.Trans, or -1 when r is outside that alphabet. Callers typically use
+// RuneToIndex on hot matching paths before following a transition.
 func RuneToIndex(r rune) int {
 	switch {
 	case r >= 'a' && r <= 'z':
@@ -58,7 +62,12 @@ func RuneToIndex(r rune) int {
 	}
 }
 
-// IndexToRune maps a transition-array index (0–37) back to its DNS character.
+// IndexToRune maps i back to the DNS character used at that transition slot.
+//
+// The i parameter must be in the inclusive range [0, AlphabetSize). The return
+// value is the DNS rune stored at that index, or -1 when i is outside the
+// supported alphabet. This is mainly useful for diagnostics such as DOT output
+// and test assertions rather than the runtime match path.
 func IndexToRune(i int) rune {
 	switch {
 	case i >= 0 && i <= 25:
@@ -70,7 +79,7 @@ func IndexToRune(i int) rune {
 	case i == 37:
 		return '.'
 	default:
-		panic(fmt.Sprintf("automaton: IndexToRune: index %d out of range [0,%d)", i, AlphabetSize))
+		return -1
 	}
 }
 
@@ -243,7 +252,14 @@ func shouldMinimize(opts CompileOptions) bool {
 	return *opts.Minimize
 }
 
-// CompileRules compiles filterlist rules into a single minimized DFA.
+// CompileRules compiles rules into one deterministic finite automaton.
+//
+// The rules parameter contains canonical filter patterns as produced by the
+// filterlist package. The opts parameter controls state limits, minimization,
+// and an optional compile timeout. On success CompileRules returns a DFA ready
+// for repeated Match calls; on failure it returns an error describing invalid
+// patterns, timeout exhaustion, or MaxStates violations. Callers typically use
+// CompileRules after loading or reloading filter lists.
 func CompileRules(rules []filterlist.Rule, opts CompileOptions) (*DFA, error) {
 	if len(rules) == 0 {
 		d := &DFA{states: make([]DFAState, 1)}
@@ -517,9 +533,13 @@ func ruleIDsKey(ids []int) string {
 
 // ---- Match ----
 
-// Match tests whether the input string is accepted by the DFA.
-// Returns whether a match was found and the associated rule IDs.
-// Uses direct pointer traversal with no map lookups.
+// Match checks whether input is accepted by the compiled DFA.
+//
+// The input parameter should already be normalized to lowercase DNS form.
+// Match returns a boolean indicating whether the DFA reached an accepting
+// state, together with the matching rule IDs recorded on that state. The
+// method is intended for the request hot path and performs only array lookups
+// and direct pointer traversal.
 func (d *DFA) Match(input string) (matched bool, ruleIDs []int) {
 	if d == nil || d.start == nil {
 		return false, nil
@@ -539,7 +559,11 @@ func (d *DFA) Match(input string) (matched bool, ruleIDs []int) {
 	return s.Accept, s.RuleIDs
 }
 
-// StateCount returns the number of states in the DFA.
+// StateCount reports how many DFA states are currently allocated.
+//
+// It returns 0 for a nil receiver and otherwise the number of compiled states
+// in the automaton. Callers typically use this for metrics, diagnostics, and
+// capacity planning rather than query-time behavior.
 func (d *DFA) StateCount() int {
 	if d == nil {
 		return 0
@@ -550,6 +574,11 @@ func (d *DFA) StateCount() int {
 // ---- DOT output ----
 
 // DumpDot writes a Graphviz DOT representation of the DFA to w.
+//
+// The w parameter receives a directed graph that visualizes state transitions,
+// accepting states, and rule attribution. DumpDot returns an error when d is
+// nil or when writing to w fails. It is mainly intended for CLI debugging and
+// offline inspection of compiled filter behavior.
 func (d *DFA) DumpDot(w io.Writer) error {
 	if d == nil {
 		return errors.New("nil DFA")
@@ -561,10 +590,18 @@ func (d *DFA) DumpDot(w io.Writer) error {
 		stateIdx[&d.states[i]] = i
 	}
 
-	fmt.Fprintln(w, "digraph DFA {")
-	fmt.Fprintln(w, "  rankdir=LR;")
-	fmt.Fprintf(w, "  start [shape=point];\n")
-	fmt.Fprintf(w, "  start -> s%d;\n", stateIdx[d.start])
+	if _, err := fmt.Fprintln(w, "digraph DFA {"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "  rankdir=LR;"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  start [shape=point];\n"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  start -> s%d;\n", stateIdx[d.start]); err != nil {
+		return err
+	}
 
 	for i := range d.states {
 		s := &d.states[i]
@@ -576,7 +613,9 @@ func (d *DFA) DumpDot(w io.Writer) error {
 		if s.Accept && len(s.RuleIDs) > 0 {
 			label = fmt.Sprintf("s%d\\nrules:%v", i, s.RuleIDs)
 		}
-		fmt.Fprintf(w, "  s%d [shape=%s, label=\"%s\"];\n", i, shape, label)
+		if _, err := fmt.Fprintf(w, "  s%d [shape=%s, label=\"%s\"];\n", i, shape, label); err != nil {
+			return err
+		}
 
 		// Group transitions by target to make cleaner labels
 		targetChars := make(map[int][]rune)
@@ -588,11 +627,15 @@ func (d *DFA) DumpDot(w io.Writer) error {
 		for target, chars := range targetChars {
 			sort.Slice(chars, func(a, b int) bool { return chars[a] < chars[b] })
 			label := compactRuneLabel(chars)
-			fmt.Fprintf(w, "  s%d -> s%d [label=\"%s\"];\n", i, target, label)
+			if _, err := fmt.Fprintf(w, "  s%d -> s%d [label=\"%s\"];\n", i, target, label); err != nil {
+				return err
+			}
 		}
 	}
 
-	fmt.Fprintln(w, "}")
+	if _, err := fmt.Fprintln(w, "}"); err != nil {
+		return err
+	}
 	return nil
 }
 
