@@ -86,10 +86,10 @@ func TestStartAndStop(t *testing.T) {
 	if updateCount < 1 {
 		t.Error("expected at least 1 OnUpdate call from initial compile")
 	}
-	if lastBL.DFA == nil {
+	if lastBL.Matcher == nil {
 		t.Error("expected blacklist DFA after initial compile")
 	}
-	if lastWL.DFA != nil {
+	if lastWL.Matcher != nil {
 		t.Error("expected nil whitelist DFA (empty dir)")
 	}
 	if lastBL.RuleCount != 1 {
@@ -98,8 +98,8 @@ func TestStartAndStop(t *testing.T) {
 	mu.Unlock()
 
 	// Verify blacklist match
-	if lastBL.DFA != nil {
-		matched, _ := lastBL.DFA.Match("ads.example.com")
+	if lastBL.Matcher != nil {
+		matched, _ := lastBL.Matcher.Match("ads.example.com")
 		if !matched {
 			t.Error("expected blacklist to match ads.example.com")
 		}
@@ -195,8 +195,8 @@ func TestHotReload(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	mu.Lock()
-	if lastBL.DFA != nil {
-		matched, _ := lastBL.DFA.Match("tracker.example.com")
+	if lastBL.Matcher != nil {
+		matched, _ := lastBL.Matcher.Match("tracker.example.com")
 		if !matched {
 			t.Error("expected blacklist to match tracker.example.com after reload")
 		}
@@ -243,7 +243,7 @@ func TestHotReloadKeepsPreviousDFAOnCompileFailure(t *testing.T) {
 	})
 
 	mu.Lock()
-	if lastBL.DFA == nil {
+	if lastBL.Matcher == nil {
 		mu.Unlock()
 		t.Fatal("expected initial blacklist DFA")
 	}
@@ -258,10 +258,10 @@ func TestHotReloadKeepsPreviousDFAOnCompileFailure(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if lastBL.DFA == nil {
+	if lastBL.Matcher == nil {
 		t.Fatal("expected previous blacklist DFA to be preserved after failed rebuild")
 	}
-	matched, _ := lastBL.DFA.Match("a.b")
+	matched, _ := lastBL.Matcher.Match("a.b")
 	if !matched {
 		t.Error("expected preserved blacklist DFA to keep matching the original rule")
 	}
@@ -317,7 +317,7 @@ func TestHotReloadClearsDFAOnEmptyLists(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if lastBL.DFA != nil {
+	if lastBL.Matcher != nil {
 		t.Fatal("expected blacklist DFA to clear after successful empty reload")
 	}
 	if lastBL.RuleCount != 0 {
@@ -431,17 +431,17 @@ func TestBlacklistExcludesExceptionRules(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stop() })
 
-	if lastBL.DFA == nil {
+	if lastBL.Matcher == nil {
 		t.Fatal("expected blacklist DFA")
 	}
 	if lastBL.RuleCount != 1 {
 		t.Errorf("RuleCount = %d, want 1 (only non-@@ rule)", lastBL.RuleCount)
 	}
-	matched, _ := lastBL.DFA.Match("ads.example.com")
+	matched, _ := lastBL.Matcher.Match("ads.example.com")
 	if !matched {
 		t.Error("expected blacklist to match ads.example.com")
 	}
-	matched, _ = lastBL.DFA.Match("safe.example.com")
+	matched, _ = lastBL.Matcher.Match("safe.example.com")
 	if matched {
 		t.Error("expected blacklist NOT to match safe.example.com (@@-filtered)")
 	}
@@ -476,17 +476,17 @@ func TestWhitelistDefaultKeepsExceptionRules(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stop() })
 
-	if lastWL.DFA == nil {
+	if lastWL.Matcher == nil {
 		t.Fatal("expected whitelist DFA")
 	}
 	if lastWL.RuleCount != 1 {
 		t.Errorf("RuleCount = %d, want 1 (only @@-rule)", lastWL.RuleCount)
 	}
-	matched, _ := lastWL.DFA.Match("safe.example.com")
+	matched, _ := lastWL.Matcher.Match("safe.example.com")
 	if !matched {
 		t.Error("expected whitelist to match safe.example.com")
 	}
-	matched, _ = lastWL.DFA.Match("other.example.com")
+	matched, _ = lastWL.Matcher.Match("other.example.com")
 	if matched {
 		t.Error("expected whitelist NOT to match other.example.com (non-@@ filtered out)")
 	}
@@ -522,17 +522,17 @@ func TestWhitelistInvertedKeepsNonExceptionRules(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stop() })
 
-	if lastWL.DFA == nil {
+	if lastWL.Matcher == nil {
 		t.Fatal("expected whitelist DFA")
 	}
 	if lastWL.RuleCount != 1 {
 		t.Errorf("RuleCount = %d, want 1 (only non-@@ rule)", lastWL.RuleCount)
 	}
-	matched, _ := lastWL.DFA.Match("safe.example.com")
+	matched, _ := lastWL.Matcher.Match("safe.example.com")
 	if !matched {
 		t.Error("expected inverted whitelist to match safe.example.com")
 	}
-	matched, _ = lastWL.DFA.Match("ignored.example.com")
+	matched, _ = lastWL.Matcher.Match("ignored.example.com")
 	if matched {
 		t.Error("expected inverted whitelist NOT to match ignored.example.com (@@-filtered)")
 	}

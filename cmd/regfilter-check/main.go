@@ -16,9 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/TomTonic/coredns-regfilter/pkg/automaton"
 	"github.com/TomTonic/coredns-regfilter/pkg/blockloader"
 	"github.com/TomTonic/coredns-regfilter/pkg/filterlist"
+	"github.com/TomTonic/coredns-regfilter/pkg/matcher"
 )
 
 func main() {
@@ -127,14 +127,14 @@ func cmdValidate(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 
-		writef(stdout, "[%s] compiling DFA...\n", item.label)
-		dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: *maxStates})
+		writef(stdout, "[%s] compiling..\n", item.label)
+		m, err := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: *maxStates, Logger: &logger})
 		if err != nil {
 			writef(stderr, "[%s] COMPILE ERROR: %v\n", item.label, err)
 			exitCode = 1
 			continue
 		}
-		writef(stdout, "[%s] DFA compiled: %d states\n", item.label, dfa.StateCount())
+		writef(stdout, "[%s] compiled: %d literals, %d DFA states\n", item.label, m.LiteralCount(), m.StateCount())
 	}
 
 	return exitCode
@@ -163,7 +163,7 @@ func cmdMatch(args []string, stdout, stderr io.Writer) int {
 	normalized := normalizeDomain(*name)
 
 	type listInfo struct {
-		dfa      *automaton.DFA
+		m        *matcher.Matcher
 		sources  []string
 		patterns []string
 	}
@@ -181,7 +181,7 @@ func cmdMatch(args []string, stdout, stderr io.Writer) int {
 		if len(rules) == 0 {
 			return listInfo{}
 		}
-		dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: *maxStates})
+		m, err := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: *maxStates})
 		if err != nil {
 			writef(stderr, "compile error: %v\n", err)
 			return listInfo{}
@@ -192,7 +192,7 @@ func cmdMatch(args []string, stdout, stderr io.Writer) int {
 			sources[i] = r.Source
 			patterns[i] = r.Pattern
 		}
-		return listInfo{dfa: dfa, sources: sources, patterns: patterns}
+		return listInfo{m: m, sources: sources, patterns: patterns}
 	}
 
 	wl := loadList(*wlDir, "whitelist")
@@ -200,8 +200,8 @@ func cmdMatch(args []string, stdout, stderr io.Writer) int {
 
 	writef(stdout, "checking: %s\n", normalized)
 
-	if wl.dfa != nil {
-		matched, ruleIDs := wl.dfa.Match(normalized)
+	if wl.m != nil {
+		matched, ruleIDs := wl.m.Match(normalized)
 		if matched {
 			writef(stdout, "result: WHITELISTED")
 			writeRuleDetail(stdout, ruleIDs, wl.sources, wl.patterns)
@@ -210,8 +210,8 @@ func cmdMatch(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if bl.dfa != nil {
-		matched, ruleIDs := bl.dfa.Match(normalized)
+	if bl.m != nil {
+		matched, ruleIDs := bl.m.Match(normalized)
 		if matched {
 			writef(stdout, "result: BLACKLISTED")
 			writeRuleDetail(stdout, ruleIDs, bl.sources, bl.patterns)
@@ -290,7 +290,7 @@ func cmdDumpDot(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 
-		dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: *maxStates})
+		m, err := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: *maxStates})
 		if err != nil {
 			writef(stderr, "[%s] compile error: %v\n", item.label, err)
 			continue
@@ -301,7 +301,7 @@ func cmdDumpDot(args []string, stdout, stderr io.Writer) int {
 			writef(stderr, "[%s] create %s: %v\n", item.label, item.output, err)
 			continue
 		}
-		if err := dfa.DumpDot(f); err != nil {
+		if err := m.DumpDot(f); err != nil {
 			writef(stderr, "[%s] dump error: %v\n", item.label, err)
 		}
 		if err := f.Close(); err != nil {

@@ -1,19 +1,17 @@
-// Package automaton provides compilation of domain filter patterns into a
-// single minimized DFA with rule attribution (Thompson NFA → subset construction
-// → Hopcroft minimization).
+// Package automaton compiles domain filter patterns into a cache-optimized,
+// array-based deterministic finite automaton (DFA) with rule attribution.
+//
+// The compilation pipeline is: Thompson NFA → subset construction → Hopcroft
+// minimization → contiguous-slice DFA with direct-pointer transitions.
 //
 // The supported pattern language is intentionally small:
 //   - Literal characters: a-z, 0-9, '-', '.'
 //   - Wildcard: '*' matches zero or more DNS characters
 //   - Patterns are implicitly anchored (full match)
 //
-// The final DFA uses a cache-optimized, array-based representation: each state
-// stores a fixed-size transition array indexed by [RuneToIndex], with direct
-// pointers to successor states. No maps are used at match time.
-//
 // Example usage:
 //
-//	dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{})
+//	dfa, err := automaton.Compile(patterns, automaton.CompileOptions{})
 //	matched, ruleIDs := dfa.Match("ads.example.com")
 package automaton
 
@@ -22,11 +20,19 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/TomTonic/coredns-regfilter/pkg/filterlist"
 )
+
+// Logger receives progress messages during DFA compilation.
+// The watcher and CoreDNS plugin pass their logger here so users
+// see what is happening during potentially long compilations.
+type Logger interface {
+	Infof(format string, args ...interface{})
+}
+
+func nopLogf(string, ...interface{}) {}
 
 // AlphabetSize is the number of characters in the DNS alphabet (a-z, 0-9, '-', '.').
 const AlphabetSize = 38
@@ -233,9 +239,10 @@ type DFAState struct {
 	RuleIDs []int // which rules led to this accept state
 }
 
-// DFA is a deterministic finite automaton compiled from filter rules.
-// All states reside in a single contiguous slice for cache locality.
-// Transitions are direct pointers between states.
+// DFA is an array-based deterministic finite automaton compiled from domain
+// filter patterns. States reside in a single contiguous slice for cache
+// locality and transitions are direct pointers — no map lookups or index
+// indirection at match time.
 type DFA struct {
 	start  *DFAState
 	states []DFAState
@@ -249,6 +256,8 @@ type CompileOptions struct {
 	Minimize *bool
 	// CompileTimeout is the maximum time allowed for compilation.
 	CompileTimeout time.Duration
+	// Logger receives progress messages during compilation. May be nil.
+	Logger Logger
 }
 
 // shouldMinimize returns whether Hopcroft minimization is enabled for these options.
@@ -259,56 +268,86 @@ func shouldMinimize(opts CompileOptions) bool {
 	return *opts.Minimize
 }
 
-// CompileRules compiles rules into one deterministic finite automaton.
+// Pattern pairs a canonical filter pattern string with its rule ID.
+type Pattern struct {
+	Expr   string // canonical pattern (lowercase DNS chars and '*')
+	RuleID int    // caller-assigned identifier for match attribution
+}
+
+// Compile compiles patterns into a minimized DFA ready for repeated Match
+// calls.
 //
-// The rules parameter contains canonical filter patterns as produced by the
-// filterlist package. The opts parameter controls state limits, minimization,
-// and an optional compile timeout. On success CompileRules returns a DFA ready
-// for repeated Match calls; on failure it returns an error describing invalid
-// patterns, timeout exhaustion, or MaxStates violations. Callers typically use
-// CompileRules after loading or reloading filter lists.
-func CompileRules(rules []filterlist.Rule, opts CompileOptions) (*DFA, error) {
-	if len(rules) == 0 {
-		d := &DFA{states: make([]DFAState, 1)}
-		d.start = &d.states[0]
-		return d, nil
+// Each Pattern carries a lowercase expression string from the supported
+// alphabet (a-z, 0-9, '-', '.', '*') and a caller-assigned rule ID that is
+// preserved in accept states for match attribution. The opts parameter
+// controls state limits, Hopcroft minimization, an optional compile timeout,
+// and a progress logger.
+//
+// On failure Compile returns an error describing invalid patterns, timeout
+// exhaustion, or MaxStates violations.
+func Compile(patterns []Pattern, opts CompileOptions) (*DFA, error) {
+	logf := nopLogf
+	if opts.Logger != nil {
+		logf = opts.Logger.Infof
 	}
 
+	if len(patterns) == 0 {
+		logf("automaton: 0 patterns, nothing to compile")
+		return &DFA{}, nil
+	}
+
+	started := time.Now()
 	deadline := time.Time{}
 	if opts.CompileTimeout > 0 {
 		deadline = time.Now().Add(opts.CompileTimeout)
 	}
 
-	// Build per-rule NFAs
-	var nfas []*nfa
-	for i, rule := range rules {
+	// Build per-pattern NFAs.
+	logf("automaton: building %d NFAs...", len(patterns))
+	nfaStart := time.Now()
+	nfas := make([]*nfa, 0, len(patterns))
+	for i, p := range patterns {
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return nil, fmt.Errorf("automaton: compile timeout after %d/%d rules", i, len(rules))
+			return nil, fmt.Errorf("automaton: compile timeout after %d/%d patterns", i, len(patterns))
 		}
-		pattern := strings.ToLower(rule.Pattern)
-		n, err := buildPatternNFA(pattern, i)
+		expr := strings.ToLower(p.Expr)
+		n, err := buildPatternNFA(expr, p.RuleID)
 		if err != nil {
-			return nil, fmt.Errorf("automaton: rule %d (%s): %w", i, rule.Source, err)
+			return nil, fmt.Errorf("automaton: pattern %d: %w", i, err)
 		}
 		nfas = append(nfas, n)
 	}
+	logf("automaton: NFA build: %v", time.Since(nfaStart))
 
-	// Combine into single NFA
+	// Combine into single NFA.
+	combineStart := time.Now()
 	combined := combineNFAs(nfas)
+	logf("automaton: NFA combine: %v (%d NFA states)", time.Since(combineStart), len(combined.states))
 
-	// Subset construction: NFA → map-based DFA
+	// Subset construction: NFA → map-based DFA.
+	logf("automaton: starting subset construction...")
+	subsetStart := time.Now()
 	md, err := subsetConstruction(combined, opts.MaxStates, deadline)
 	if err != nil {
 		return nil, err
 	}
+	logf("automaton: subset construction: %v (%d DFA states)", time.Since(subsetStart), len(md.states))
 
-	// Hopcroft minimization
+	// Hopcroft minimization.
 	if shouldMinimize(opts) {
+		logf("automaton: starting Hopcroft minimization (%d states)...", len(md.states))
+		hopcroftStart := time.Now()
+		beforeStates := len(md.states)
 		md = hopcroftMinimize(md)
+		logf("automaton: Hopcroft minimization: %v (%d → %d states)",
+			time.Since(hopcroftStart), beforeStates, len(md.states))
 	}
 
-	// Convert to array/pointer-based DFA
-	return md.toDFA(), nil
+	// Convert to array/pointer-based DFA.
+	dfa := md.toDFA()
+	logf("automaton: compiled %d patterns in %v (%d DFA states)",
+		len(patterns), time.Since(started), dfa.StateCount())
+	return dfa, nil
 }
 
 // toDFA converts an internal map-based DFA to the exported pointer-based DFA.
@@ -416,14 +455,14 @@ func computeAccept(n *nfa, stateSet []int) (accept bool, ruleIDs []int) {
 
 // makeSetKey serializes a sorted state set into a string key for the state map.
 func makeSetKey(states []int) string {
-	var b strings.Builder
+	buf := make([]byte, 0, len(states)*6)
 	for i, s := range states {
 		if i > 0 {
-			b.WriteByte(',')
+			buf = append(buf, ',')
 		}
-		fmt.Fprintf(&b, "%d", s)
+		buf = strconv.AppendInt(buf, int64(s), 10)
 	}
-	return b.String()
+	return string(buf)
 }
 
 // ---- Hopcroft Minimization ----
@@ -522,26 +561,28 @@ func splitPartition(md *mapDFA, partition, stateToPartition []int) [][]int {
 
 // mapTransitionSig computes a canonical transition fingerprint for partition refinement.
 func mapTransitionSig(md *mapDFA, state int, stateToPartition []int) string {
-	var b strings.Builder
+	buf := make([]byte, 0, AlphabetSize*8)
 	for _, c := range dnsAlphabet {
 		target, ok := md.states[state].trans[c]
 		if ok {
-			fmt.Fprintf(&b, "%c:%d,", c, stateToPartition[target])
+			buf = append(buf, byte(c), ':') //nolint:gosec // c is from dnsAlphabet (ASCII only)
+			buf = strconv.AppendInt(buf, int64(stateToPartition[target]), 10)
+			buf = append(buf, ',')
 		}
 	}
-	return b.String()
+	return string(buf)
 }
 
 // ruleIDsKey serializes rule IDs into a string key for accept-state partitioning.
 func ruleIDsKey(ids []int) string {
-	var b strings.Builder
+	buf := make([]byte, 0, len(ids)*4)
 	for i, id := range ids {
 		if i > 0 {
-			b.WriteByte(',')
+			buf = append(buf, ',')
 		}
-		fmt.Fprintf(&b, "%d", id)
+		buf = strconv.AppendInt(buf, int64(id), 10)
 	}
-	return b.String()
+	return string(buf)
 }
 
 // ---- Match ----
@@ -549,15 +590,12 @@ func ruleIDsKey(ids []int) string {
 // Match checks whether input is accepted by the compiled DFA.
 //
 // The input parameter should already be normalized to lowercase DNS form.
-// Match returns a boolean indicating whether the DFA reached an accepting
-// state, together with the matching rule IDs recorded on that state. The
-// method is intended for the request hot path and performs only array lookups
-// and direct pointer traversal.
+// Match returns whether the input matched any pattern, together with the
+// matching rule IDs. The DFA traversal is O(n) in the length of input.
 func (d *DFA) Match(input string) (matched bool, ruleIDs []int) {
 	if d == nil || d.start == nil {
 		return false, nil
 	}
-
 	s := d.start
 	for _, r := range input {
 		idx := RuneToIndex(r)
@@ -569,14 +607,16 @@ func (d *DFA) Match(input string) (matched bool, ruleIDs []int) {
 			return false, nil
 		}
 	}
-	return s.Accept, s.RuleIDs
+	if s.Accept {
+		return true, s.RuleIDs
+	}
+	return false, nil
 }
 
 // StateCount reports how many DFA states are currently allocated.
 //
-// It returns 0 for a nil receiver and otherwise the number of compiled states
-// in the automaton. Callers typically use this for metrics, diagnostics, and
-// capacity planning rather than query-time behavior.
+// It returns 0 for a nil receiver or an empty DFA. Callers typically use
+// this for metrics, diagnostics, and capacity planning.
 func (d *DFA) StateCount() int {
 	if d == nil {
 		return 0
@@ -595,6 +635,10 @@ func (d *DFA) StateCount() int {
 func (d *DFA) DumpDot(w io.Writer) error {
 	if d == nil {
 		return errors.New("nil DFA")
+	}
+	if d.start == nil {
+		_, err := fmt.Fprintln(w, "digraph DFA {\n  rankdir=LR;\n  empty [shape=note, label=\"empty DFA\"];\n}")
+		return err
 	}
 
 	// Build pointer → index map for output

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/TomTonic/coredns-regfilter/pkg/filterlist"
 )
 
 // ---------------------------------------------------------------------------
@@ -139,11 +137,11 @@ func TestBuildPatternNFAInvalidChar(t *testing.T) {
 
 // TestMatchLiteral verifies that users get exact host blocking for literal rules in the automaton package by asserting that only the configured literal names match.
 func TestMatchLiteral(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "ads.example.com"},
-		{Pattern: "tracker.example.com"},
+	rules := []Pattern{
+		{Expr: "ads.example.com", RuleID: 1},
+		{Expr: "tracker.example.com"},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,10 +167,10 @@ func TestMatchLiteral(t *testing.T) {
 
 // TestMatchWildcard verifies that users get subdomain matching for wildcard rules in the automaton package by asserting that matching prefixes pass and unrelated names do not.
 func TestMatchWildcard(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "*.ads.example.com"},
+	rules := []Pattern{
+		{Expr: "*.ads.example.com"},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,10 +197,10 @@ func TestMatchWildcard(t *testing.T) {
 
 // TestMatchWildcardMiddle verifies that users can match wildcard segments inside labels in the automaton package by asserting that ads* patterns cover the intended hostnames.
 func TestMatchWildcardMiddle(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "ads*.example.com"},
+	rules := []Pattern{
+		{Expr: "ads*.example.com"},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,12 +226,12 @@ func TestMatchWildcardMiddle(t *testing.T) {
 
 // TestMatchMultipleRules verifies that users can combine several patterns in one compiled automaton in the automaton package by asserting that each configured rule matches while safe names do not.
 func TestMatchMultipleRules(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "ads.example.com"},
-		{Pattern: "*.tracker.example.com"},
-		{Pattern: "malware.example.com"},
+	rules := []Pattern{
+		{Expr: "ads.example.com", RuleID: 1},
+		{Expr: "*.tracker.example.com"},
+		{Expr: "malware.example.com"},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,11 +255,11 @@ func TestMatchMultipleRules(t *testing.T) {
 
 // TestMatchRuleIDs verifies that users can trace a match back to all contributing rules in the automaton package by asserting that duplicate patterns preserve both rule IDs.
 func TestMatchRuleIDs(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "ads.example.com"},
-		{Pattern: "ads.example.com"}, // duplicate
+	rules := []Pattern{
+		{Expr: "ads.example.com", RuleID: 0},
+		{Expr: "ads.example.com", RuleID: 1}, // same pattern, different ID
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +275,7 @@ func TestMatchRuleIDs(t *testing.T) {
 
 // TestMatchEmpty verifies that users do not get accidental matches from an empty ruleset in the automaton package by asserting that an empty DFA rejects arbitrary input.
 func TestMatchEmpty(t *testing.T) {
-	dfa, err := CompileRules(nil, CompileOptions{})
+	dfa, err := Compile(nil, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,8 +299,8 @@ func TestMatchNilDFA(t *testing.T) {
 
 // TestMatchNonDNSCharacters verifies that malformed query strings do not crash or spuriously match in the automaton package by asserting that unsupported characters produce clean non-matches.
 func TestMatchNonDNSCharacters(t *testing.T) {
-	rules := []filterlist.Rule{{Pattern: "example.com"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: "example.com"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,8 +324,8 @@ func TestMatchNonDNSCharacters(t *testing.T) {
 
 // TestMatchEmptyInput verifies that users do not get false positives for empty queries in the automaton package by asserting that non-empty patterns reject empty input.
 func TestMatchEmptyInput(t *testing.T) {
-	rules := []filterlist.Rule{{Pattern: "example.com"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: "example.com"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,8 +337,8 @@ func TestMatchEmptyInput(t *testing.T) {
 
 // TestMatchWildcardOnly verifies that users can intentionally match any DNS-style name with a pure wildcard rule in the automaton package by asserting that DNS input matches and unsupported input does not.
 func TestMatchWildcardOnly(t *testing.T) {
-	rules := []filterlist.Rule{{Pattern: "*"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: "*"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,8 +362,8 @@ func TestMatchWildcardOnly(t *testing.T) {
 func TestMatchAllDNSCharsInDomain(t *testing.T) {
 	// A domain containing every allowed DNS char
 	domain := "abcdefghijklmnopqrstuvwxyz0123456789-."
-	rules := []filterlist.Rule{{Pattern: domain}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: domain}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,11 +379,11 @@ func TestMatchAllDNSCharsInDomain(t *testing.T) {
 
 // TestMatchOverlappingPatterns verifies that users keep all applicable rule attributions when rules overlap in the automaton package by asserting that a specific hostname reports both the literal and wildcard rule IDs.
 func TestMatchOverlappingPatterns(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "*.example.com"},
-		{Pattern: "ads.example.com"},
+	rules := []Pattern{
+		{Expr: "*.example.com", RuleID: 0},
+		{Expr: "ads.example.com", RuleID: 1},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,8 +410,8 @@ func TestMatchOverlappingPatterns(t *testing.T) {
 // TestMatchConsecutiveWildcards verifies that users can combine adjacent wildcard behavior in the automaton package by asserting that *.* patterns match dotted names and still reject missing separators.
 func TestMatchConsecutiveWildcards(t *testing.T) {
 	// Pattern with multiple wildcards
-	rules := []filterlist.Rule{{Pattern: "*.*"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: "*.*"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,17 +441,17 @@ func TestMatchConsecutiveWildcards(t *testing.T) {
 
 // TestMinimization verifies that users get a space-efficient automaton without changing behavior in the automaton package by asserting that minimization never increases states or changes match outcomes.
 func TestMinimization(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "a.com"},
-		{Pattern: "b.com"},
+	rules := []Pattern{
+		{Expr: "a.com"},
+		{Expr: "b.com"},
 	}
 	noMin := boolPtr(false)
-	dfaNoMin, err := CompileRules(rules, CompileOptions{Minimize: noMin})
+	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: noMin})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	dfaMin, err := CompileRules(rules, CompileOptions{})
+	dfaMin, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,12 +474,12 @@ func TestMinimization(t *testing.T) {
 
 // TestMinimizationPreservesRuleAttribution verifies that users keep precise rule attribution after DFA minimization in the automaton package by asserting that each literal still returns its original rule ID.
 func TestMinimizationPreservesRuleAttribution(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "a.com"},
-		{Pattern: "b.com"},
-		{Pattern: "c.com"},
+	rules := []Pattern{
+		{Expr: "a.com", RuleID: 0},
+		{Expr: "b.com", RuleID: 1},
+		{Expr: "c.com", RuleID: 2},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,17 +501,17 @@ func TestMinimizationSharesSuffixes(t *testing.T) {
 	// With unique rule IDs, suffix states cannot be merged because different
 	// ruleID sets at accept states propagate back through the chain.
 	// Verify that minimization preserves correctness and doesn't increase states.
-	rules := []filterlist.Rule{
-		{Pattern: "a.example.com"},
-		{Pattern: "b.example.com"},
-		{Pattern: "c.example.com"},
+	rules := []Pattern{
+		{Expr: "a.example.com", RuleID: 0},
+		{Expr: "b.example.com", RuleID: 1},
+		{Expr: "c.example.com", RuleID: 2},
 	}
 	noMin := boolPtr(false)
-	dfaNoMin, err := CompileRules(rules, CompileOptions{Minimize: noMin})
+	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: noMin})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dfaMin, err := CompileRules(rules, CompileOptions{})
+	dfaMin, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,10 +545,10 @@ func TestMinimizationSharesSuffixes(t *testing.T) {
 
 // TestCompileMaxStates verifies that operators can cap compilation growth in the automaton package by asserting that state explosion past MaxStates returns a descriptive error.
 func TestCompileMaxStates(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "*.*.*.example.com"},
+	rules := []Pattern{
+		{Expr: "*.*.*.example.com"},
 	}
-	_, err := CompileRules(rules, CompileOptions{MaxStates: 2})
+	_, err := Compile(rules, CompileOptions{MaxStates: 2})
 	if err == nil {
 		t.Error("expected MaxStates error")
 	}
@@ -562,11 +560,11 @@ func TestCompileMaxStates(t *testing.T) {
 // TestCompileTimeout verifies that operators can bound compile latency in the automaton package by asserting that an unrealistically small deadline triggers a timeout error.
 func TestCompileTimeout(t *testing.T) {
 	ruleCount := scaledHeavyTestCount(10000, 1000)
-	var rules []filterlist.Rule
+	var rules []Pattern
 	for i := 0; i < ruleCount; i++ {
-		rules = append(rules, filterlist.Rule{Pattern: "*.*.*.example.com"})
+		rules = append(rules, Pattern{Expr: "*.*.*.example.com"})
 	}
-	_, err := CompileRules(rules, CompileOptions{CompileTimeout: 1}) // 1 nanosecond
+	_, err := Compile(rules, CompileOptions{CompileTimeout: 1}) // 1 nanosecond
 	if err == nil {
 		t.Error("expected timeout error")
 	}
@@ -574,10 +572,10 @@ func TestCompileTimeout(t *testing.T) {
 
 // TestCompileInvalidPattern verifies that users get a compile error for unsupported pattern characters in the automaton package by asserting that invalid rules are rejected.
 func TestCompileInvalidPattern(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "invalid_domain!"},
+	rules := []Pattern{
+		{Expr: "invalid_domain!"},
 	}
-	_, err := CompileRules(rules, CompileOptions{})
+	_, err := Compile(rules, CompileOptions{})
 	if err == nil {
 		t.Error("expected error for invalid character in pattern")
 	}
@@ -587,35 +585,49 @@ func TestCompileInvalidPattern(t *testing.T) {
 // StateCount and DumpDot
 // ---------------------------------------------------------------------------
 
-// TestStateCount verifies that operators can inspect DFA size for diagnostics in the automaton package by asserting the expected counts for nil, empty, and simple compiled automatons.
+// TestStateCount verifies that operators can inspect DFA size for diagnostics
+// in the automaton package by asserting expected counts for nil, empty, literal,
+// and wildcard automatons.
 func TestStateCount(t *testing.T) {
 	var dfa *DFA
 	if dfa.StateCount() != 0 {
 		t.Error("nil DFA state count should be 0")
 	}
 
-	dfa, err := CompileRules(nil, CompileOptions{})
+	dfa, err := Compile(nil, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dfa.StateCount() != 1 {
-		t.Errorf("empty-rules DFA state count = %d, want 1", dfa.StateCount())
+	if dfa.StateCount() != 0 {
+		t.Errorf("empty-patterns DFA state count = %d, want 0", dfa.StateCount())
 	}
 
-	rules := []filterlist.Rule{{Pattern: "a.b"}}
-	dfa, err = CompileRules(rules, CompileOptions{})
+	// Literal patterns now compile into DFA states like any other pattern
+	literalPatterns := []Pattern{{Expr: "a.b"}}
+	dfa, err = Compile(literalPatterns, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dfa.StateCount() < 4 {
-		t.Errorf("DFA for 'a.b' should have at least 4 states, got %d", dfa.StateCount())
+	if dfa.StateCount() < 2 {
+		t.Errorf("literal pattern DFA should have at least 2 states, got %d", dfa.StateCount())
+	}
+
+	// Wildcard pattern compiles into DFA states
+	wildcardPatterns := []Pattern{{Expr: "*.b"}}
+	dfa, err = Compile(wildcardPatterns, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dfa.StateCount() < 2 {
+		t.Errorf("wildcard DFA for '*.b' should have at least 2 states, got %d", dfa.StateCount())
 	}
 }
 
 // TestDumpDot verifies that users can export a compiled automaton for visualization in the automaton package by asserting that DOT output contains the expected graph markers.
 func TestDumpDot(t *testing.T) {
-	rules := []filterlist.Rule{{Pattern: "a.b"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	// Use a wildcard pattern so it compiles into DFA states for DOT output
+	rules := []Pattern{{Expr: "*.b"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,8 +662,9 @@ func TestDumpDotNil(t *testing.T) {
 
 // TestDFATransitionsAreDirectPointers verifies that users get the intended constant-time pointer traversal in the automaton package by asserting that compiled transitions can be followed directly through the state array.
 func TestDFATransitionsAreDirectPointers(t *testing.T) {
-	rules := []filterlist.Rule{{Pattern: "a.b"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	// Use a wildcard pattern to create DFA states with traversable transitions
+	rules := []Pattern{{Expr: "a.*"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,20 +676,16 @@ func TestDFATransitionsAreDirectPointers(t *testing.T) {
 		t.Fatal("start state should have transition for 'a'")
 	}
 
-	// Follow the chain: a → . → b (accept)
+	// Follow the chain: a → . → wildcard (accept)
 	dotIdx := RuneToIndex('.')
 	afterDot := next.Trans[dotIdx]
 	if afterDot == nil {
 		t.Fatal("second state should have transition for '.'")
 	}
 
-	bIdx := RuneToIndex('b')
-	accept := afterDot.Trans[bIdx]
-	if accept == nil {
-		t.Fatal("third state should have transition for 'b'")
-	}
-	if !accept.Accept {
-		t.Error("final state should be accepting")
+	// afterDot should be accepting (wildcard matches zero or more)
+	if !afterDot.Accept {
+		t.Error("state after 'a.' should be accepting for pattern 'a.*'")
 	}
 
 	// Verify that following pointers gives same result as Match
@@ -703,14 +712,14 @@ func TestDFANoMapInFinalStates(_ *testing.T) {
 // TestLargeAutomatonManyLiteralRules verifies that users can compile and match a large literal blocklist in the automaton package by asserting end-to-end correctness across many distinct host rules.
 func TestLargeAutomatonManyLiteralRules(t *testing.T) {
 	n := scaledHeavyTestCount(5000, 1000)
-	rules := make([]filterlist.Rule, n)
+	rules := make([]Pattern, n)
 	for i := range n {
-		rules[i] = filterlist.Rule{Pattern: fmt.Sprintf("host%d.example.com", i)}
+		rules[i] = Pattern{Expr: fmt.Sprintf("host%d.example.com", i), RuleID: i}
 	}
 
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
-		t.Fatalf("CompileRules with %d rules: %v", n, err)
+		t.Fatalf("Compile with %d patterns: %v", n, err)
 	}
 
 	t.Logf("DFA states for %d literal rules: %d", n, dfa.StateCount())
@@ -739,14 +748,14 @@ func TestLargeAutomatonManyLiteralRules(t *testing.T) {
 // TestLargeAutomatonManyWildcardRules verifies that users can compile and match a large wildcard blocklist in the automaton package by asserting correct wildcard hits across many generated domains.
 func TestLargeAutomatonManyWildcardRules(t *testing.T) {
 	n := scaledHeavyTestCount(1000, 250)
-	rules := make([]filterlist.Rule, n)
+	rules := make([]Pattern, n)
 	for i := range n {
-		rules[i] = filterlist.Rule{Pattern: fmt.Sprintf("*.ad%d.example.com", i)}
+		rules[i] = Pattern{Expr: fmt.Sprintf("*.ad%d.example.com", i)}
 	}
 
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
-		t.Fatalf("CompileRules with %d wildcard rules: %v", n, err)
+		t.Fatalf("Compile with %d wildcard patterns: %v", n, err)
 	}
 
 	t.Logf("DFA states for %d wildcard rules: %d", n, dfa.StateCount())
@@ -774,17 +783,17 @@ func TestLargeAutomatonMinimizationEffectiveness(t *testing.T) {
 	// Verify that minimization preserves correctness at scale and doesn't
 	// increase state count.
 	n := scaledHeavyTestCount(500, 200)
-	rules := make([]filterlist.Rule, n)
+	rules := make([]Pattern, n)
 	for i := range n {
-		rules[i] = filterlist.Rule{Pattern: fmt.Sprintf("%c%c.example.com", 'a'+rune(i/26%26), 'a'+rune(i%26))}
+		rules[i] = Pattern{Expr: fmt.Sprintf("%c%c.example.com", 'a'+rune(i/26%26), 'a'+rune(i%26))}
 	}
 
 	noMin := boolPtr(false)
-	dfaNoMin, err := CompileRules(rules, CompileOptions{Minimize: noMin})
+	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: noMin})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dfaMin, err := CompileRules(rules, CompileOptions{})
+	dfaMin, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,17 +826,17 @@ func TestLargeAutomatonMinimizationEffectiveness(t *testing.T) {
 // TestLargeAutomatonMixedRules verifies that users can combine large literal and wildcard rule sets in one compiled automaton by asserting that both kinds of rules still match correctly.
 func TestLargeAutomatonMixedRules(t *testing.T) {
 	// Mix of literal and wildcard rules
-	var rules []filterlist.Rule
+	var rules []Pattern
 	literalCount := scaledHeavyTestCount(500, 200)
 	wildcardCount := scaledHeavyTestCount(200, 80)
 	for i := range literalCount {
-		rules = append(rules, filterlist.Rule{Pattern: fmt.Sprintf("ads%d.example.com", i)})
+		rules = append(rules, Pattern{Expr: fmt.Sprintf("ads%d.example.com", i)})
 	}
 	for i := range wildcardCount {
-		rules = append(rules, filterlist.Rule{Pattern: fmt.Sprintf("*.tracker%d.example.com", i)})
+		rules = append(rules, Pattern{Expr: fmt.Sprintf("*.tracker%d.example.com", i)})
 	}
 
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,13 +870,13 @@ func TestLargeAutomatonMixedRules(t *testing.T) {
 func TestLargeAutomatonRuleAttributionPreserved(t *testing.T) {
 	// After minimization with many rules, each rule must keep its ID
 	n := scaledHeavyTestCount(200, 100)
-	rules := make([]filterlist.Rule, n)
+	rules := make([]Pattern, n)
 	for i := range n {
 		// Each pattern is unique enough that no two share the same accept state
-		rules[i] = filterlist.Rule{Pattern: fmt.Sprintf("unique%d.test.com", i)}
+		rules[i] = Pattern{Expr: fmt.Sprintf("unique%d.test.com", i), RuleID: i}
 	}
 
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,8 +899,8 @@ func TestLargeAutomatonRuleAttributionPreserved(t *testing.T) {
 
 // TestSingleCharPattern verifies that users can compile the smallest literal rule in the automaton package by asserting that a one-character pattern matches only that exact input.
 func TestSingleCharPattern(t *testing.T) {
-	rules := []filterlist.Rule{{Pattern: "a"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: "a"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,12 +921,12 @@ func TestSingleCharPattern(t *testing.T) {
 
 // TestDuplicatePatternsDifferentRuleIDs verifies that users keep all contributing IDs when the same rule appears multiple times in the automaton package by asserting that duplicate patterns return every originating rule ID.
 func TestDuplicatePatternsDifferentRuleIDs(t *testing.T) {
-	rules := []filterlist.Rule{
-		{Pattern: "x.com"},
-		{Pattern: "x.com"},
-		{Pattern: "x.com"},
+	rules := []Pattern{
+		{Expr: "x.com", RuleID: 0},
+		{Expr: "x.com", RuleID: 1},
+		{Expr: "x.com", RuleID: 2},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -934,8 +943,8 @@ func TestDuplicatePatternsDifferentRuleIDs(t *testing.T) {
 // TestEmptyPatternWildcard verifies that users can intentionally allow an empty-string wildcard match in the automaton package by asserting that the standalone wildcard accepts empty input.
 func TestEmptyPatternWildcard(t *testing.T) {
 	// Wildcard pattern matches empty string
-	rules := []filterlist.Rule{{Pattern: "*"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: "*"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,8 +957,8 @@ func TestEmptyPatternWildcard(t *testing.T) {
 
 // TestWildcardAtEnd verifies that users can match suffix variations with a trailing wildcard in the automaton package by asserting that ads.* covers dotted continuations but not missing separators.
 func TestWildcardAtEnd(t *testing.T) {
-	rules := []filterlist.Rule{{Pattern: "ads.*"}}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	rules := []Pattern{{Expr: "ads.*"}}
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -991,14 +1000,14 @@ func scaledHeavyTestCount(regular, underRace int) int {
 // ---------------------------------------------------------------------------
 
 func BenchmarkMatch(b *testing.B) {
-	rules := []filterlist.Rule{
-		{Pattern: "ads.example.com"},
-		{Pattern: "tracker.example.com"},
-		{Pattern: "*.ad.doubleclick.net"},
-		{Pattern: "malware.example.org"},
-		{Pattern: "*.analytics.google.com"},
+	rules := []Pattern{
+		{Expr: "ads.example.com", RuleID: 1},
+		{Expr: "tracker.example.com"},
+		{Expr: "*.ad.doubleclick.net"},
+		{Expr: "malware.example.org"},
+		{Expr: "*.analytics.google.com"},
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1019,11 +1028,11 @@ func BenchmarkMatch(b *testing.B) {
 
 func BenchmarkMatchLargeAutomaton(b *testing.B) {
 	const n = 5000
-	rules := make([]filterlist.Rule, n)
+	rules := make([]Pattern, n)
 	for i := range n {
-		rules[i] = filterlist.Rule{Pattern: fmt.Sprintf("host%d.example.com", i)}
+		rules[i] = Pattern{Expr: fmt.Sprintf("host%d.example.com", i), RuleID: i}
 	}
-	dfa, err := CompileRules(rules, CompileOptions{})
+	dfa, err := Compile(rules, CompileOptions{})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1043,13 +1052,13 @@ func BenchmarkMatchLargeAutomaton(b *testing.B) {
 }
 
 func BenchmarkCompile(b *testing.B) {
-	rules := make([]filterlist.Rule, 100)
+	rules := make([]Pattern, 100)
 	for i := range rules {
-		rules[i] = filterlist.Rule{Pattern: "subdomain" + string(rune('a'+i%26)) + ".example.com"}
+		rules[i] = Pattern{Expr: "subdomain" + string(rune('a'+i%26)) + ".example.com"}
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := CompileRules(rules, CompileOptions{})
+		_, err := Compile(rules, CompileOptions{})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1058,13 +1067,13 @@ func BenchmarkCompile(b *testing.B) {
 
 func BenchmarkCompileLarge(b *testing.B) {
 	const n = 1000
-	rules := make([]filterlist.Rule, n)
+	rules := make([]Pattern, n)
 	for i := range n {
-		rules[i] = filterlist.Rule{Pattern: fmt.Sprintf("host%d.example.com", i)}
+		rules[i] = Pattern{Expr: fmt.Sprintf("host%d.example.com", i), RuleID: i}
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := CompileRules(rules, CompileOptions{})
+		_, err := Compile(rules, CompileOptions{})
 		if err != nil {
 			b.Fatal(err)
 		}

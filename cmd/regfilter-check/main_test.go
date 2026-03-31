@@ -67,7 +67,7 @@ func TestRunValidateCompilesRules(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run(validate) code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout.String(), "[blacklist] DFA compiled") {
+	if !strings.Contains(stdout.String(), "[blacklist] compiled:") {
 		t.Fatalf("stdout = %q, want compile summary", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "WARN:") {
@@ -129,7 +129,7 @@ func TestRunMatchReportsPolicyDecision(t *testing.T) {
 func TestRunDumpDotWritesOutput(t *testing.T) {
 	blDir := t.TempDir()
 	outDir := t.TempDir()
-	writeFilterFile(t, blDir, "deny.txt", "||ads.example.com^\n")
+	writeFilterFile(t, blDir, "deny.txt", "||*.ads.example.com^\n")
 	outPath := filepath.Join(outDir, "blacklist.dot")
 
 	var stdout, stderr bytes.Buffer
