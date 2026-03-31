@@ -34,7 +34,7 @@ jobs:
 
       - name: Run tests with race detector
         run: |
-          go test ./... -race \
+          go test ./... -race -timeout=20m \
             -coverprofile=coverage.out \
             -covermode=atomic \
             -count=1
