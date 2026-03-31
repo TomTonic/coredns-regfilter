@@ -3,6 +3,7 @@ package automaton
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -125,6 +126,82 @@ func TestBuildPatternNFAInvalidChar(t *testing.T) {
 	_, err := buildPatternNFA("bad!", 0)
 	if err == nil {
 		t.Error("expected error for invalid character")
+	}
+}
+
+// TestMakeSetKeyUsesFixedWidthEncoding verifies that users compiling different
+// wildcard state subsets never lose matches through accidental DFA-state
+// merging in the automaton package.
+//
+// This test covers the internal subset-construction key builder.
+//
+// It asserts that each state ID occupies a fixed-width slot and that byte-like
+// values such as 0xfe,0x0d and 0x0f,0xed produce different concatenated keys.
+func TestMakeSetKeyUsesFixedWidthEncoding(t *testing.T) {
+	left := []int{0xfe, 0x0d}
+	right := []int{0x0f, 0xed}
+	leftKey, err := makeSetKey(left)
+	if err != nil {
+		t.Fatalf("makeSetKey(%v) error = %v", left, err)
+	}
+	rightKey, err := makeSetKey(right)
+	if err != nil {
+		t.Fatalf("makeSetKey(%v) error = %v", right, err)
+	}
+
+	if len(leftKey) != 8 {
+		t.Fatalf("len(makeSetKey(%v)) = %d, want 8", left, len(leftKey))
+	}
+	if leftKey == rightKey {
+		t.Fatalf("makeSetKey(%v) unexpectedly matched makeSetKey(%v)", left, right)
+	}
+
+	wantLeft := string([]byte{0xfe, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x00})
+	if leftKey != wantLeft {
+		t.Fatalf("makeSetKey(%v) = % x, want % x", left, []byte(leftKey), []byte(wantLeft))
+	}
+}
+
+// TestMakeSetKeyRejectsOutOfRangeStates verifies that invalid internal state
+// IDs fail fast in the automaton package instead of silently aliasing a valid
+// DFA subset key.
+//
+// This test covers the fixed-width key encoder used during subset construction.
+//
+// It asserts that negative state IDs are rejected with an error.
+func TestMakeSetKeyRejectsOutOfRangeStates(t *testing.T) {
+	if _, err := makeSetKey([]int{-1}); err == nil {
+		t.Fatal("makeSetKey should reject negative state ids")
+	}
+}
+
+// TestSplitPartitionKeepsStableOrder verifies that users get reproducible DFA
+// layouts across equivalent compilations in the automaton package.
+//
+// This test covers the Hopcroft partition-refinement helper used during DFA
+// minimization.
+//
+// It asserts that partition groups are emitted in first-seen state order
+// instead of depending on randomized map iteration.
+func TestSplitPartitionKeepsStableOrder(t *testing.T) {
+	md := &intermediateDFA{states: make([]intermediateDFAState, 6)}
+	for i := range md.states {
+		md.states[i] = newIntermediateDFAState(false, nil)
+	}
+
+	aIndex := RuneToIndex('a')
+	md.states[0].trans[aIndex] = 4
+	md.states[1].trans[aIndex] = 5
+	md.states[2].trans[aIndex] = 4
+	md.states[3].trans[aIndex] = 5
+
+	partition := []int{0, 1, 2, 3}
+	stateToPartition := []int{0, 0, 0, 0, 1, 2}
+
+	got := splitPartition(md, partition, stateToPartition)
+	want := [][]int{{0, 2}, {1, 3}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("splitPartition() = %v, want %v", got, want)
 	}
 }
 

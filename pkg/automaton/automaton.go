@@ -19,8 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -110,9 +111,24 @@ type nfa struct {
 	start  int
 }
 
+// closureScratch reuses dense visitation state for repeated epsilon closures.
+// NFA state IDs are contiguous slice indices, so indexed marks fit better than
+// a generic hash set during subset construction.
+type closureScratch struct {
+	marks  []uint32
+	stamp  uint32
+	stack  []int
+	result []int
+}
+
 // newNFA allocates an empty NFA with no states.
 func newNFA() *nfa {
 	return &nfa{}
+}
+
+// newClosureScratch preallocates reusable state for repeated epsilon closures.
+func newClosureScratch(stateCount int) *closureScratch {
+	return &closureScratch{marks: make([]uint32, stateCount)}
 }
 
 // addState appends a fresh state and returns its ID.
@@ -196,30 +212,42 @@ func combineNFAs(nfas []*nfa) *nfa {
 }
 
 // epsilonClosure computes the set of states reachable from the given set via
-// epsilon transitions (BFS).
-func epsilonClosure(n *nfa, states []int) []int {
-	visited := make(map[int]bool)
-	stack := make([]int, len(states))
-	copy(stack, states)
-	for _, s := range states {
-		visited[s] = true
+// epsilon transitions.
+func epsilonClosure(cs *closureScratch, n *nfa, states []int) []int {
+	cs.stamp++
+	if cs.stamp == 0 {
+		clear(cs.marks)
+		cs.stamp = 1
 	}
+
+	stack := cs.stack[:0]
+	result := cs.result[:0]
+
+	for _, s := range states {
+		if cs.marks[s] == cs.stamp {
+			continue
+		}
+		cs.marks[s] = cs.stamp
+		stack = append(stack, s)
+	}
+
 	for len(stack) > 0 {
 		s := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
+		result = append(result, s)
 		for _, t := range n.states[s].trans[epsilon] {
-			if !visited[t] {
-				visited[t] = true
-				stack = append(stack, t)
+			if cs.marks[t] == cs.stamp {
+				continue
 			}
+			cs.marks[t] = cs.stamp
+			stack = append(stack, t)
 		}
 	}
-	result := make([]int, 0, len(visited))
-	for s := range visited {
-		result = append(result, s)
-	}
-	sort.Ints(result)
-	return result
+
+	slices.Sort(result)
+	cs.stack = stack[:0]
+	cs.result = result[:0]
+	return slices.Clone(result)
 }
 
 // ---- Intermediate DFA (used only during construction and minimization) ----
@@ -403,11 +431,15 @@ func (md *intermediateDFA) toDFA() *DFA {
 // subsetConstruction converts an NFA to an intermediate DFA using the classic algorithm.
 func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediateDFA, error) {
 	md := &intermediateDFA{}
+	closures := newClosureScratch(len(n.states))
 
 	stateMap := make(map[string]int)
 
-	startClosure := epsilonClosure(n, []int{n.start})
-	startKey := makeSetKey(startClosure)
+	startClosure := epsilonClosure(closures, n, []int{n.start})
+	startKey, err := makeSetKey(startClosure)
+	if err != nil {
+		return nil, err
+	}
 	stateMap[startKey] = 0
 	md.start = 0
 
@@ -423,7 +455,10 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 
 		current := worklist[0]
 		worklist = worklist[1:]
-		currentKey := makeSetKey(current)
+		currentKey, err := makeSetKey(current)
+		if err != nil {
+			return nil, err
+		}
 		currentID := stateMap[currentKey]
 
 		for _, c := range dnsAlphabet {
@@ -435,8 +470,11 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 			if len(moved) == 0 {
 				continue
 			}
-			closure := epsilonClosure(n, moved)
-			key := makeSetKey(closure)
+			closure := epsilonClosure(closures, n, moved)
+			key, err := makeSetKey(closure)
+			if err != nil {
+				return nil, err
+			}
 
 			if _, exists := stateMap[key]; !exists {
 				if maxStates > 0 && len(md.states) >= maxStates {
@@ -470,23 +508,51 @@ func computeAccept(n *nfa, stateSet []int) (accept bool, ruleIDs []uint32) {
 			}
 		}
 	}
-	sort.Slice(ruleIDs, func(i, j int) bool { return ruleIDs[i] < ruleIDs[j] })
+	slices.Sort(ruleIDs)
 	return accept, ruleIDs
 }
 
-// makeSetKey serializes a sorted state set into a string key for the state map.
-func makeSetKey(states []int) string {
-	buf := make([]byte, 0, len(states)*6)
-	for i, s := range states {
-		if i > 0 {
-			buf = append(buf, ',')
+// makeSetKey serializes a sorted state set into a deterministic binary key for
+// the state map. Each state ID occupies a fixed four-byte slot so concatenated
+// keys remain unambiguous without decimal formatting or variable-length codecs.
+func makeSetKey(states []int) (string, error) {
+	buf := make([]byte, 0, len(states)*4)
+	for _, s := range states {
+		var err error
+		buf, err = appendFixedUint32(buf, s)
+		if err != nil {
+			return "", err
 		}
-		buf = strconv.AppendInt(buf, int64(s), 10)
 	}
-	return string(buf)
+	return string(buf), nil
+}
+
+func appendFixedUint32(buf []byte, value int) ([]byte, error) {
+	if value < 0 || value > math.MaxUint32 {
+		return nil, fmt.Errorf("automaton: state id %d out of uint32 range", value)
+	}
+
+	return append(buf,
+		byte(value&0xff),
+		byte(value>>8&0xff),
+		byte(value>>16&0xff),
+		byte(value>>24&0xff),
+	), nil
 }
 
 // ---- Hopcroft Minimization ----
+
+type ruleIDsFingerprint struct {
+	hash   uint64
+	length int
+}
+
+type acceptPartitionBucket struct {
+	ruleIDs []uint32
+	states  []int
+}
+
+type transitionSignature [AlphabetSize]int
 
 // hopcroftMinimize merges equivalent states to produce a minimal DFA.
 func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
@@ -497,20 +563,7 @@ func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
 
 	// Initial partition: accept states vs non-accept states
 	// Further split accept states by ruleID sets for correct attribution.
-	partitionMap := make(map[string][]int)
-	for i := range md.states {
-		s := &md.states[i]
-		key := "N"
-		if s.accept {
-			key = "A:" + ruleIDsKey(s.ruleIDs)
-		}
-		partitionMap[key] = append(partitionMap[key], i)
-	}
-
-	partitions := make([][]int, 0, len(partitionMap))
-	for _, p := range partitionMap {
-		partitions = append(partitions, p)
-	}
+	partitions := initialPartitions(md)
 
 	// stateToPartition: state -> partition index
 	stateToPartition := make([]int, n)
@@ -541,23 +594,75 @@ func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
 
 	// Build minimized intermediateDFA.
 	minMD := &intermediateDFA{}
-	partitionID := make(map[int]int)
-	for pi := range partitions {
-		partitionID[pi] = pi
-	}
 	minMD.states = make([]intermediateDFAState, len(partitions))
 	for pi, p := range partitions {
 		rep := p[0]
 		minMD.states[pi] = newIntermediateDFAState(md.states[rep].accept, md.states[rep].ruleIDs)
 		for idx, target := range md.states[rep].trans {
 			if target != noTransitionState {
-				minMD.states[pi].trans[idx] = partitionID[stateToPartition[target]]
+				minMD.states[pi].trans[idx] = stateToPartition[target]
 			}
 		}
 	}
-	minMD.start = partitionID[stateToPartition[md.start]]
+	minMD.start = stateToPartition[md.start]
 
 	return minMD
+}
+
+// initialPartitions separates non-accepting states from accepting states and
+// keeps distinct rule-ID sets in different starting buckets.
+func initialPartitions(md *intermediateDFA) [][]int {
+	nonAccept := make([]int, 0, len(md.states))
+	bucketIndexByFingerprint := make(map[ruleIDsFingerprint][]int)
+	acceptBuckets := make([]acceptPartitionBucket, 0)
+
+	for i := range md.states {
+		s := &md.states[i]
+		if !s.accept {
+			nonAccept = append(nonAccept, i)
+			continue
+		}
+
+		fingerprint := fingerprintRuleIDs(s.ruleIDs)
+		bucketIndexes := bucketIndexByFingerprint[fingerprint]
+		matched := false
+		for _, bucketIndex := range bucketIndexes {
+			if !slices.Equal(acceptBuckets[bucketIndex].ruleIDs, s.ruleIDs) {
+				continue
+			}
+			acceptBuckets[bucketIndex].states = append(acceptBuckets[bucketIndex].states, i)
+			matched = true
+			break
+		}
+		if matched {
+			continue
+		}
+
+		bucketIndexByFingerprint[fingerprint] = append(bucketIndexByFingerprint[fingerprint], len(acceptBuckets))
+		acceptBuckets = append(acceptBuckets, acceptPartitionBucket{
+			ruleIDs: slices.Clone(s.ruleIDs),
+			states:  []int{i},
+		})
+	}
+
+	partitions := make([][]int, 0, len(acceptBuckets)+1)
+	if len(nonAccept) > 0 {
+		partitions = append(partitions, nonAccept)
+	}
+	for _, bucket := range acceptBuckets {
+		partitions = append(partitions, bucket.states)
+	}
+	return partitions
+}
+
+// fingerprintRuleIDs narrows candidate buckets before full rule-ID slice comparison.
+func fingerprintRuleIDs(ids []uint32) ruleIDsFingerprint {
+	hash := uint64(1469598103934665603)
+	for _, id := range ids {
+		hash ^= uint64(id)
+		hash *= 1099511628211
+	}
+	return ruleIDsFingerprint{hash: hash, length: len(ids)}
 }
 
 // splitPartition refines one partition group by transition signature.
@@ -566,43 +671,34 @@ func splitPartition(md *intermediateDFA, partition, stateToPartition []int) [][]
 		return [][]int{partition}
 	}
 
-	groups := make(map[string][]int)
+	groupIndexes := make(map[transitionSignature]int, len(partition))
+	result := make([][]int, 0, len(partition))
 	for _, s := range partition {
-		key := mapTransitionSig(md, s, stateToPartition)
-		groups[key] = append(groups[key], s)
+		key := transitionSig(md, s, stateToPartition)
+		groupIndex, exists := groupIndexes[key]
+		if !exists {
+			groupIndex = len(result)
+			groupIndexes[key] = groupIndex
+			result = append(result, nil)
+		}
+		result[groupIndex] = append(result[groupIndex], s)
 	}
 
-	result := make([][]int, 0, len(groups))
-	for _, g := range groups {
-		result = append(result, g)
-	}
 	return result
 }
 
-// mapTransitionSig computes a canonical transition fingerprint for partition refinement.
-func mapTransitionSig(md *intermediateDFA, state int, stateToPartition []int) string {
-	buf := make([]byte, 0, AlphabetSize*8)
+// transitionSig records which partition each outgoing edge reaches.
+func transitionSig(md *intermediateDFA, state int, stateToPartition []int) transitionSignature {
+	sig := transitionSignature{}
+	for i := range sig {
+		sig[i] = noTransitionState
+	}
 	for idx, target := range md.states[state].trans {
 		if target != noTransitionState {
-			buf = strconv.AppendInt(buf, int64(idx), 10)
-			buf = append(buf, ':')
-			buf = strconv.AppendInt(buf, int64(stateToPartition[target]), 10)
-			buf = append(buf, ',')
+			sig[idx] = stateToPartition[target]
 		}
 	}
-	return string(buf)
-}
-
-// ruleIDsKey serializes rule IDs into a string key for accept-state partitioning.
-func ruleIDsKey(ids []uint32) string {
-	buf := make([]byte, 0, len(ids)*4)
-	for i, id := range ids {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = strconv.AppendUint(buf, uint64(id), 10)
-	}
-	return string(buf)
+	return sig
 }
 
 // ---- Match ----
