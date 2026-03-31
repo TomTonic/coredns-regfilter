@@ -1,4 +1,4 @@
-package integration_test
+package regfilter_test
 
 import (
 	"path/filepath"

@@ -1,4 +1,4 @@
-package plugin
+package regfilter
 
 import (
 	"runtime/debug"
