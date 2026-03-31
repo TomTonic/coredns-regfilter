@@ -25,9 +25,10 @@ func LoadDirectory(dir string, logger filterlist.Logger) ([]filterlist.Rule, err
 	}
 
 	var (
-		allRules     []filterlist.Rule
-		totalFiles   int
-		totalSkipped int
+		allRules    []filterlist.Rule
+		loadedFiles int
+		skippedExts int
+		failedFiles int
 	)
 
 	for _, entry := range entries {
@@ -37,26 +38,35 @@ func LoadDirectory(dir string, logger filterlist.Logger) ([]filterlist.Rule, err
 
 		name := entry.Name()
 		if !isFilterFile(name) {
+			skippedExts++
+			if logger != nil {
+				logger.Infof("blockloader: %s: skipped, unsupported extension %q",
+					filepath.Join(dir, name), filepath.Ext(name))
+			}
 			continue
 		}
 
-		totalFiles++
 		fullPath := filepath.Join(dir, name)
 
 		rules, err := filterlist.ParseFile(fullPath, logger)
 		if err != nil {
+			failedFiles++
 			if logger != nil {
 				logger.Warnf("blockloader: error reading %s: %v", fullPath, err)
 			}
 			continue
 		}
 
+		loadedFiles++
+		if logger != nil {
+			logger.Infof("blockloader: %s: %d rules", fullPath, len(rules))
+		}
 		allRules = append(allRules, rules...)
 	}
 
 	if logger != nil {
-		logger.Warnf("blockloader: loaded %d files, %d rules from %s (skipped %d)",
-			totalFiles, len(allRules), dir, totalSkipped)
+		logger.Infof("blockloader: %s: %d rules from %d files (%d skipped, %d failed)",
+			dir, len(allRules), loadedFiles, skippedExts, failedFiles)
 	}
 
 	return allRules, nil

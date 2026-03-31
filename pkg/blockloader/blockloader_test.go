@@ -8,10 +8,15 @@ import (
 
 type testLogger struct {
 	warnings []string
+	infos    []string
 }
 
 func (l *testLogger) Warnf(format string, _ ...interface{}) {
 	l.warnings = append(l.warnings, format)
+}
+
+func (l *testLogger) Infof(format string, _ ...interface{}) {
+	l.infos = append(l.infos, format)
 }
 
 // TestLoadDirectory verifies that users get one combined rule set when a filter

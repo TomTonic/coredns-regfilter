@@ -405,3 +405,8 @@ type filterlistLogger struct {
 func (f *filterlistLogger) Warnf(format string, args ...interface{}) {
 	f.l.Warnf(format, args...)
 }
+
+// Infof forwards filterlist informational messages into the watcher logger interface.
+func (f *filterlistLogger) Infof(format string, args ...interface{}) {
+	f.l.Infof(format, args...)
+}

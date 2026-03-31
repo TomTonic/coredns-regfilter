@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/TomTonic/coredns-regfilter/pkg/automaton"
@@ -64,21 +65,22 @@ Match-specific:
   --name DOMAIN      Domain name to check
 
 Dump-dot-specific:
-	--out WL.dot,BL.dot   Output file paths (default: whitelist.dot,blacklist.dot)`)
+  --out WL.dot,BL.dot   Output file paths (default: whitelist.dot,blacklist.dot)`)
 }
 
 // cliLogger adapts blockloader warnings to the CLI stderr stream.
 type cliLogger struct {
-	stderr          io.Writer
-	suppressSummary bool
+	stderr io.Writer
 }
 
 // Warnf writes parser and loader warnings to stderr for CLI execution paths.
 func (l cliLogger) Warnf(format string, args ...interface{}) {
-	if l.suppressSummary && strings.HasPrefix(format, "blockloader: loaded ") {
-		return
-	}
 	writef(l.stderr, "WARN: "+format+"\n", args...)
+}
+
+// Infof writes informational load progress to stderr for CLI execution paths.
+func (l cliLogger) Infof(format string, args ...interface{}) {
+	writef(l.stderr, "INFO: "+format+"\n", args...)
 }
 
 // cmdValidate loads configured directories and reports compile success or failure.
@@ -152,7 +154,7 @@ func cmdMatch(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	logger := cliLogger{stderr: stderr, suppressSummary: true}
+	logger := cliLogger{stderr: stderr}
 	normalized := normalizeDomain(*name)
 
 	var wlDFA, blDFA *automaton.DFA
@@ -230,7 +232,7 @@ func cmdDumpDot(args []string, stdout, stderr io.Writer) int {
 		blOut = strings.TrimSpace(outFiles[1])
 	}
 
-	logger := cliLogger{stderr: stderr, suppressSummary: true}
+	logger := cliLogger{stderr: stderr}
 
 	for _, item := range []struct {
 		label  string
@@ -260,7 +262,7 @@ func cmdDumpDot(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 
-		f, err := os.Create(item.output)
+		f, err := os.Create(filepath.Clean(item.output))
 		if err != nil {
 			writef(stderr, "[%s] create %s: %v\n", item.label, item.output, err)
 			continue
