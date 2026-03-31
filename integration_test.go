@@ -5,9 +5,9 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/TomTonic/coredns-regfilter/pkg/automaton"
 	"github.com/TomTonic/coredns-regfilter/pkg/blockloader"
 	"github.com/TomTonic/coredns-regfilter/pkg/filterlist"
+	"github.com/TomTonic/coredns-regfilter/pkg/matcher"
 )
 
 type testLogger struct {
@@ -53,12 +53,12 @@ func TestIntegrationBlacklistCompile(t *testing.T) {
 
 	t.Logf("deny rules: %d, allow rules: %d", len(denyRules), len(allowRules))
 
-	dfa, err := automaton.CompileRules(denyRules, automaton.CompileOptions{})
+	m, err := matcher.CompileRules(denyRules, matcher.CompileOptions{})
 	if err != nil {
 		t.Fatalf("CompileRules error: %v", err)
 	}
 
-	t.Logf("DFA states: %d", dfa.StateCount())
+	t.Logf("DFA states: %d", m.StateCount())
 
 	// Test expected matches
 	shouldMatch := []string{
@@ -76,7 +76,7 @@ func TestIntegrationBlacklistCompile(t *testing.T) {
 		"sub.tracking.example.com",
 	}
 	for _, name := range shouldMatch {
-		matched, _ := dfa.Match(name)
+		matched, _ := m.Match(name)
 		if !matched {
 			t.Errorf("expected blacklist to match %q", name)
 		}
@@ -90,7 +90,7 @@ func TestIntegrationBlacklistCompile(t *testing.T) {
 		"www.example.com",
 	}
 	for _, name := range shouldNotMatch {
-		matched, _ := dfa.Match(name)
+		matched, _ := m.Match(name)
 		if matched {
 			t.Errorf("expected blacklist NOT to match %q", name)
 		}
@@ -113,7 +113,7 @@ func TestIntegrationWhitelistCompile(t *testing.T) {
 
 	t.Logf("loaded %d rules from whitelist", len(rules))
 
-	dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{})
+	m, err := matcher.CompileRules(rules, matcher.CompileOptions{})
 	if err != nil {
 		t.Fatalf("CompileRules error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestIntegrationWhitelistCompile(t *testing.T) {
 		"api.example.com",
 	}
 	for _, name := range shouldMatch {
-		matched, _ := dfa.Match(name)
+		matched, _ := m.Match(name)
 		if !matched {
 			t.Errorf("expected whitelist to match %q", name)
 		}
@@ -137,7 +137,7 @@ func TestIntegrationWhitelistCompile(t *testing.T) {
 		"example.com",
 	}
 	for _, name := range shouldNotMatch {
-		matched, _ := dfa.Match(name)
+		matched, _ := m.Match(name)
 		if matched {
 			t.Errorf("expected whitelist NOT to match %q", name)
 		}
@@ -167,26 +167,26 @@ func TestIntegrationWhitelistPrecedence(t *testing.T) {
 		}
 	}
 
-	blDFA, err := automaton.CompileRules(denyRules, automaton.CompileOptions{})
+	blMatcher, err := matcher.CompileRules(denyRules, matcher.CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wlDFA, err := automaton.CompileRules(wlRules, automaton.CompileOptions{})
+	wlMatcher, err := matcher.CompileRules(wlRules, matcher.CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// safe.example.com is in the whitelist
 	name := "safe.example.com"
-	wlMatch, _ := wlDFA.Match(name)
+	wlMatch, _ := wlMatcher.Match(name)
 	if !wlMatch {
 		t.Error("expected whitelist to match safe.example.com")
 	}
 
 	// ads.example.com is blacklisted but not whitelisted
 	name = "ads.example.com"
-	wlMatch, _ = wlDFA.Match(name)
-	blMatch, _ := blDFA.Match(name)
+	wlMatch, _ = wlMatcher.Match(name)
+	blMatch, _ := blMatcher.Match(name)
 	if wlMatch {
 		t.Error("expected whitelist NOT to match ads.example.com")
 	}
@@ -217,20 +217,20 @@ func TestRealWorldAdGuardExampleParseAndCompileSubset(t *testing.T) {
 	assertPatternsPresent(t, rules, wantPatterns)
 
 	subset := selectRulesByPattern(t, rules, wantPatterns)
-	dfa, err := automaton.CompileRules(subset, automaton.CompileOptions{MaxStates: 10000})
+	m, err := matcher.CompileRules(subset, matcher.CompileOptions{MaxStates: 10000})
 	if err != nil {
 		t.Fatalf("CompileRules error: %v", err)
 	}
 
 	for _, pattern := range wantPatterns {
-		matched, _ := dfa.Match(pattern)
+		matched, _ := m.Match(pattern)
 		if !matched {
 			t.Errorf("expected compiled AdGuard subset to match %q", pattern)
 		}
 	}
 
 	for _, name := range []string{"example.org", "safe.example.com", "not-present.invalid"} {
-		matched, _ := dfa.Match(name)
+		matched, _ := m.Match(name)
 		if matched {
 			t.Errorf("expected compiled AdGuard subset not to match %q", name)
 		}
@@ -263,20 +263,20 @@ func TestRealWorldEasyListGermanyParseAndCompileSubset(t *testing.T) {
 	assertPatternsPresent(t, rules, wantPatterns)
 
 	subset := selectRulesByPattern(t, rules, wantPatterns)
-	dfa, err := automaton.CompileRules(subset, automaton.CompileOptions{MaxStates: 10000})
+	m, err := matcher.CompileRules(subset, matcher.CompileOptions{MaxStates: 10000})
 	if err != nil {
 		t.Fatalf("CompileRules error: %v", err)
 	}
 
 	for _, pattern := range wantPatterns {
-		matched, _ := dfa.Match(pattern)
+		matched, _ := m.Match(pattern)
 		if !matched {
 			t.Errorf("expected compiled EasyList Germany subset to match %q", pattern)
 		}
 	}
 
 	for _, name := range []string{"focus.de", "example.org", "safe.example.com"} {
-		matched, _ := dfa.Match(name)
+		matched, _ := m.Match(name)
 		if matched {
 			t.Errorf("expected compiled EasyList Germany subset not to match %q", name)
 		}

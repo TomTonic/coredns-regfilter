@@ -13,8 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/TomTonic/coredns-regfilter/pkg/automaton"
 	"github.com/TomTonic/coredns-regfilter/pkg/filterlist"
+	"github.com/TomTonic/coredns-regfilter/pkg/matcher"
 	rfmetrics "github.com/TomTonic/coredns-regfilter/pkg/metrics"
 )
 
@@ -62,24 +62,24 @@ func (m *mockNextHandler) ServeDNS(_ context.Context, w dns.ResponseWriter, r *d
 
 func (m *mockNextHandler) Name() string { return "mock" }
 
-func buildDFA(t *testing.T, patterns []string) *automaton.DFA {
+func buildMatcher(t *testing.T, patterns []string) *matcher.Matcher {
 	t.Helper()
 	var rules []filterlist.Rule
 	for _, p := range patterns {
 		rules = append(rules, filterlist.Rule{Pattern: p})
 	}
-	dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{})
+	m, err := matcher.CompileRules(rules, matcher.CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dfa
+	return m
 }
 
-// buildDFAWithSources compiles patterns and returns the DFA, source strings,
+// buildMatcherWithSources compiles patterns and returns the Matcher, source strings,
 // and pattern strings for use in debug-mode tests.
-func buildDFAWithSources(t *testing.T, rules []filterlist.Rule) (*automaton.DFA, []string, []string) {
+func buildMatcherWithSources(t *testing.T, rules []filterlist.Rule) (*matcher.Matcher, []string, []string) {
 	t.Helper()
-	dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{})
+	m, err := matcher.CompileRules(rules, matcher.CompileOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func buildDFAWithSources(t *testing.T, rules []filterlist.Rule) (*automaton.DFA,
 		sources[i] = r.Source
 		patterns[i] = r.Pattern
 	}
-	return dfa, sources, patterns
+	return m, sources, patterns
 }
 
 func makeQuery(name string, qtype uint16) *dns.Msg {
@@ -107,7 +107,7 @@ func TestServeDNSBlacklistNXDOMAIN(t *testing.T) {
 			Action: ActionConfig{Mode: "nxdomain"},
 		},
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("ads.example.com", dns.TypeA)
@@ -138,7 +138,7 @@ func TestServeDNSBlacklistNullIP(t *testing.T) {
 			},
 		},
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	// Test A query
 	w := newMockWriter()
@@ -186,7 +186,7 @@ func TestServeDNSBlacklistRefuse(t *testing.T) {
 			Action: ActionConfig{Mode: "refuse"},
 		},
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("ads.example.com", dns.TypeA)
@@ -209,8 +209,8 @@ func TestServeDNSWhitelistOverridesBlacklist(t *testing.T) {
 		},
 	}
 	// Both lists contain the same domain; whitelist takes precedence
-	rf.SetWhitelist(buildDFA(t, []string{"ads.example.com"}))
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetWhitelist(buildMatcher(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("ads.example.com", dns.TypeA)
@@ -232,7 +232,7 @@ func TestServeDNSNoMatch(t *testing.T) {
 			Action: ActionConfig{Mode: "nxdomain"},
 		},
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("safe.example.com", dns.TypeA)
@@ -254,7 +254,7 @@ func TestServeDNSCaseInsensitive(t *testing.T) {
 			Action: ActionConfig{Mode: "nxdomain"},
 		},
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("ADS.Example.COM", dns.TypeA)
@@ -364,7 +364,7 @@ func TestServeDNSMatchDurationAccept(t *testing.T) {
 		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
 		metrics: m,
 	}
-	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
+	rf.SetWhitelist(buildMatcher(t, []string{"safe.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("safe.example.com", dns.TypeA)
@@ -387,7 +387,7 @@ func TestServeDNSMatchDurationReject(t *testing.T) {
 		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
 		metrics: m,
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("ads.example.com", dns.TypeA)
@@ -410,7 +410,7 @@ func TestServeDNSMatchDurationPass(t *testing.T) {
 		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
 		metrics: m,
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("clean.example.com", dns.TypeA)
@@ -433,7 +433,7 @@ func TestServeDNSWhitelistHitCounter(t *testing.T) {
 		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
 		metrics: m,
 	}
-	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
+	rf.SetWhitelist(buildMatcher(t, []string{"safe.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("safe.example.com", dns.TypeA)
@@ -456,8 +456,8 @@ func TestServeDNSBlacklistCheckAndHitCounters(t *testing.T) {
 		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
 		metrics: m,
 	}
-	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetWhitelist(buildMatcher(t, []string{"safe.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("ads.example.com", dns.TypeA)
@@ -483,8 +483,8 @@ func TestServeDNSWhitelistHitSkipsBlacklistCheck(t *testing.T) {
 		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}},
 		metrics: m,
 	}
-	rf.SetWhitelist(buildDFA(t, []string{"safe.example.com"}))
-	rf.SetBlacklist(buildDFA(t, []string{"safe.example.com"}))
+	rf.SetWhitelist(buildMatcher(t, []string{"safe.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"safe.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("safe.example.com", dns.TypeA)
@@ -644,7 +644,7 @@ func TestServeDNSDebugBlacklistMatch(t *testing.T) {
 			Debug:  true,
 		},
 	}
-	dfa, sources, patterns := buildDFAWithSources(t, []filterlist.Rule{
+	dfa, sources, patterns := buildMatcherWithSources(t, []filterlist.Rule{
 		{Pattern: "ads.example.com", Source: "/etc/coredns/blacklist/deny.txt:7"},
 	})
 	rf.SetBlacklist(dfa)
@@ -679,7 +679,7 @@ func TestServeDNSDebugWhitelistMatch(t *testing.T) {
 			Debug:  true,
 		},
 	}
-	dfa, sources, patterns := buildDFAWithSources(t, []filterlist.Rule{
+	dfa, sources, patterns := buildMatcherWithSources(t, []filterlist.Rule{
 		{Pattern: "safe.example.com", Source: "/etc/coredns/whitelist/allow.txt:3"},
 	})
 	rf.SetWhitelist(dfa)
@@ -713,7 +713,7 @@ func TestServeDNSDebugNoMatch(t *testing.T) {
 			Debug:  true,
 		},
 	}
-	rf.SetBlacklist(buildDFA(t, []string{"ads.example.com"}))
+	rf.SetBlacklist(buildMatcher(t, []string{"ads.example.com"}))
 
 	w := newMockWriter()
 	r := makeQuery("clean.example.com", dns.TypeA)

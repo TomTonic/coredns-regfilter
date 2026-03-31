@@ -4,11 +4,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/TomTonic/coredns-regfilter/pkg/automaton"
 	"github.com/TomTonic/coredns-regfilter/pkg/filterlist"
+	"github.com/TomTonic/coredns-regfilter/pkg/matcher"
 )
 
-var benchmarkDFA *automaton.DFA
+var benchmarkMatcher *matcher.Matcher
 
 const realisticBenchmarkMaxStates = 0
 
@@ -47,7 +47,7 @@ func loadRealisticBlacklistRules(tb testing.TB) []filterlist.Rule {
 // completed.
 func BenchmarkCompileRealisticBlacklist(b *testing.B) {
 	rules := loadRealisticBlacklistRules(b)
-	baseline, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
+	baseline, err := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
 	if err != nil {
 		b.Fatalf("CompileRules error: %v", err)
 	}
@@ -58,11 +58,11 @@ func BenchmarkCompileRealisticBlacklist(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		dfa, compileErr := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
+		dfa, compileErr := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
 		if compileErr != nil {
 			b.Fatalf("CompileRules error: %v", compileErr)
 		}
-		benchmarkDFA = dfa
+		benchmarkMatcher = dfa
 	}
 }
 
@@ -70,7 +70,7 @@ func BenchmarkCompileRealisticBlacklist(b *testing.B) {
 // parsing both sample lists, selecting blacklist rules, and compiling the DFA.
 func BenchmarkParseAndCompileRealisticBlacklist(b *testing.B) {
 	rules := loadRealisticBlacklistRules(b)
-	baseline, err := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
+	baseline, err := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
 	if err != nil {
 		b.Fatalf("CompileRules error: %v", err)
 	}
@@ -82,10 +82,10 @@ func BenchmarkParseAndCompileRealisticBlacklist(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		rules := loadRealisticBlacklistRules(b)
-		dfa, compileErr := automaton.CompileRules(rules, automaton.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
+		dfa, compileErr := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
 		if compileErr != nil {
 			b.Fatalf("CompileRules error: %v", compileErr)
 		}
-		benchmarkDFA = dfa
+		benchmarkMatcher = dfa
 	}
 }

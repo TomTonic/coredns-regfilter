@@ -1,12 +1,12 @@
 # coredns-regfilter
 
-`coredns-regfilter` is a CoreDNS plugin that filters DNS queries against compiled deterministic finite automata (DFAs) built from whitelist and blacklist filter lists. It is designed for DNS-layer blocking of domain-based rules with predictable lookup latency and live reload support.
+`coredns-regfilter` is a CoreDNS plugin that filters DNS queries against a hybrid matching engine built from whitelist and blacklist filter lists. It is designed for DNS-layer blocking of domain-based rules with predictable lookup latency and live reload support.
 
-The plugin loads host-oriented rules from supported filter list formats, compiles them into DFAs, and evaluates each DNS question in this order:
+The plugin loads host-oriented rules from supported filter list formats, splits them into literal domain patterns (stored in a hash-based suffix map) and wildcard patterns (compiled into a minimized DFA), and evaluates each DNS question in this order:
 
 1. Normalize the queried name.
-2. Check the whitelist DFA first.
-3. Check the blacklist DFA second.
+2. Check the whitelist matcher first.
+3. Check the blacklist matcher second.
 4. Forward or block based on the configured action.
 
 That makes whitelist precedence explicit and keeps per-query matching on the hot path inexpensive.
@@ -14,8 +14,8 @@ That makes whitelist precedence explicit and keeps per-query matching on the hot
 ## Features
 
 - **Filter list support**: Parses AdGuard, EasyList, and hosts-style filter lists
-- **DFA-based matching**: O(n) matching per query via compiled, minimized DFAs
-- **Hot reload**: Watches filter list directories and recompiles DFAs on changes
+- **Hybrid matching**: O(k) suffix map for literal domains, O(n) DFA for wildcards
+- **Hot reload**: Watches filter list directories and recompiles matchers on changes
 - **Whitelist precedence**: Whitelisted domains are always allowed, even if blacklisted
 - **Multiple block actions**: NXDOMAIN, REFUSE, or null IP responses
 - **Observability**: Prometheus metrics and structured logging
@@ -24,8 +24,8 @@ That makes whitelist precedence explicit and keeps per-query matching on the hot
 ## How It Works
 
 - Filter files are read from dedicated whitelist and blacklist directories.
-- Supported rules are normalized into domain patterns and compiled into DFAs.
-- The active DFAs are swapped atomically after a successful recompilation.
+- Supported rules are split into literal domains (suffix map) and wildcards (DFA).
+- The active matchers are swapped atomically after a successful recompilation.
 - Filesystem changes trigger debounced recompilation, so updates can be applied without restarting CoreDNS.
 
 This project intentionally focuses on DNS-relevant host matching. Browser-only rule semantics such as cosmetic filtering, request-type modifiers, or path-based matching are out of scope.
@@ -119,16 +119,16 @@ The CLI is useful for validating large lists before deploying them into CoreDNS,
 
 | Syntax | Example | Description |
 |--------|---------|-------------|
-| Domain filter | `\|\|example.com^` | Block exact domain |
-| Exception | `@@\|\|example.com^` | Allow rule (used for whitelist entries; excluded from blacklist DFA) |
-| Wildcard | `\|\|*.ads.example.com^` | Block subdomain pattern |
+| Domain filter | `\|\|example.com^` | Block domain and all subdomains |
+| Exception | `@@\|\|example.com^` | Allow rule (used for whitelist entries; excluded from blacklist) |
+| Wildcard | `\|\|*.ads.example.com^` | Block subdomain pattern (compiled into DFA) |
 | Hosts entry | `0.0.0.0 example.com` | Block via hosts format |
 
 The supported subset is intentionally conservative. If a rule cannot be reduced to a domain-level decision at DNS time, it is skipped rather than partially interpreted.
 
 ## ABP, EasyList, and AdGuard Compatibility
 
-This project intentionally implements a strict, DNS-oriented subset of Adblock Plus, EasyList, and AdGuard syntax. The parser is designed to extract host-based network rules that can be compiled into DFAs for domain matching. It does not attempt full browser-side filter semantics.
+This project intentionally implements a strict, DNS-oriented subset of Adblock Plus, EasyList, and AdGuard syntax. The parser is designed to extract host-based network rules that can be matched at the DNS layer. It does not attempt full browser-side filter semantics.
 
 ### Supported subset
 
@@ -181,7 +181,7 @@ Those tests assert that:
 | `nullip` | `0.0.0.0` | IPv4 address for `nullip` action |
 | `nullip6` | `::` | IPv6 address for `nullip` action |
 | `debounce` | `300ms` | Debounce duration for file change events |
-| `max_states` | `200000` | Maximum DFA states (limits memory) |
+| `max_states` | `200000` | Maximum wildcard DFA states (limits memory) |
 | `compile_timeout` | `30s` | Maximum compile duration |
 | `ttl` | `3600` | TTL for blocked responses (nullip) |
 | `debug` | `false` | Log per-query match details (list, name, rule source, pattern) |
@@ -208,8 +208,8 @@ Those tests assert that:
 ## Query Flow
 
 1. Normalize query name (lowercase, remove trailing dot)
-2. Check whitelist DFA → if match, **allow** (forward to next plugin)
-3. Check blacklist DFA → if match, **block** according to action
+2. Check whitelist matcher → if match, **allow** (forward to next plugin)
+3. Check blacklist matcher → if match, **block** according to action
 4. No match → forward to next plugin
 
 ## Metrics
@@ -220,10 +220,10 @@ All metrics are exported with the `coredns_regfilter_` prefix through the CoreDN
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `coredns_regfilter_whitelist_checks_total` | Counter | Number of queries evaluated against the whitelist DFA |
-| `coredns_regfilter_blacklist_checks_total` | Counter | Number of queries evaluated against the blacklist DFA |
-| `coredns_regfilter_whitelist_hits_total` | Counter | Number of queries accepted because the whitelist DFA matched |
-| `coredns_regfilter_blacklist_hits_total` | Counter | Number of queries blocked because the blacklist DFA matched |
+| `coredns_regfilter_whitelist_checks_total` | Counter | Number of queries evaluated against the whitelist matcher |
+| `coredns_regfilter_blacklist_checks_total` | Counter | Number of queries evaluated against the blacklist matcher |
+| `coredns_regfilter_whitelist_hits_total` | Counter | Number of queries accepted because the whitelist matched |
+| `coredns_regfilter_blacklist_hits_total` | Counter | Number of queries blocked because the blacklist matched |
 | `coredns_regfilter_compile_errors_total` | Counter | Number of failed filter load or compile runs |
 | `coredns_regfilter_whitelist_rules` | Gauge | Current number of supported whitelist rules loaded into the active snapshot |
 | `coredns_regfilter_blacklist_rules` | Gauge | Current number of supported blacklist rules loaded into the active snapshot |
@@ -234,7 +234,7 @@ All metrics are exported with the `coredns_regfilter_` prefix through the CoreDN
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `coredns_regfilter_compile_duration_seconds` | Histogram | Distribution of DFA compilation durations across reloads |
+| `coredns_regfilter_compile_duration_seconds` | Histogram | Distribution of matcher compilation durations across reloads |
 | `coredns_regfilter_match_duration_seconds` | Summary | Distribution of query matching latency, labeled by result |
 
 ### `match_duration_seconds` Labels

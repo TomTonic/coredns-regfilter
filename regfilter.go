@@ -16,7 +16,7 @@ import (
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/miekg/dns"
 
-	"github.com/TomTonic/coredns-regfilter/pkg/automaton"
+	"github.com/TomTonic/coredns-regfilter/pkg/matcher"
 	"github.com/TomTonic/coredns-regfilter/pkg/metrics"
 	"github.com/TomTonic/coredns-regfilter/pkg/watcher"
 )
@@ -66,8 +66,8 @@ type RegFilter struct {
 	Config  Config
 	metrics *metrics.Registry
 
-	whitelist  atomic.Value // *automaton.DFA
-	blacklist  atomic.Value // *automaton.DFA
+	whitelist  atomic.Value // *matcher.Matcher
+	blacklist  atomic.Value // *matcher.Matcher
 	wlSources  atomic.Value // []string
 	blSources  atomic.Value // []string
 	wlPatterns atomic.Value // []string
@@ -82,58 +82,58 @@ type RegFilter struct {
 // failures and plugin ordering to this module.
 func (rf *RegFilter) Name() string { return "regfilter" }
 
-// SetWhitelist atomically installs d as the active whitelist automaton.
+// SetWhitelist atomically installs m as the active whitelist matcher.
 //
-// The d parameter may be nil to clear the whitelist after a successful reload
+// The m parameter may be nil to clear the whitelist after a successful reload
 // that produced no allow rules. Callers normally use this from watcher update
 // callbacks rather than directly from the DNS hot path.
-func (rf *RegFilter) SetWhitelist(d *automaton.DFA) {
-	rf.whitelist.Store(d)
+func (rf *RegFilter) SetWhitelist(m *matcher.Matcher) {
+	rf.whitelist.Store(m)
 }
 
-// SetBlacklist atomically installs d as the active blacklist automaton.
+// SetBlacklist atomically installs m as the active blacklist matcher.
 //
-// The d parameter may be nil to clear the blacklist after a successful reload
+// The m parameter may be nil to clear the blacklist after a successful reload
 // that produced no deny rules. This keeps readers lock-free while reload logic
-// swaps compiled automatons in the background.
-func (rf *RegFilter) SetBlacklist(d *automaton.DFA) {
-	rf.blacklist.Store(d)
+// swaps compiled matchers in the background.
+func (rf *RegFilter) SetBlacklist(m *matcher.Matcher) {
+	rf.blacklist.Store(m)
 }
 
-// GetWhitelist returns the current whitelist automaton.
+// GetWhitelist returns the current whitelist matcher.
 //
 // The return value is nil when no whitelist has been compiled yet or when the
 // last successful reload yielded no allow rules. ServeDNS uses this on every
 // query before consulting the blacklist.
-func (rf *RegFilter) GetWhitelist() *automaton.DFA {
+func (rf *RegFilter) GetWhitelist() *matcher.Matcher {
 	v := rf.whitelist.Load()
 	if v == nil {
 		return nil
 	}
-	dfa, ok := v.(*automaton.DFA)
+	m, ok := v.(*matcher.Matcher)
 	if !ok {
 		return nil
 	}
 
-	return dfa
+	return m
 }
 
-// GetBlacklist returns the current blacklist automaton.
+// GetBlacklist returns the current blacklist matcher.
 //
 // The return value is nil when no blacklist has been compiled yet or when the
-// currently loaded deny set is empty. Callers use the returned DFA as a
+// currently loaded deny set is empty. Callers use the returned matcher as a
 // read-only structure and must not mutate it.
-func (rf *RegFilter) GetBlacklist() *automaton.DFA {
+func (rf *RegFilter) GetBlacklist() *matcher.Matcher {
 	v := rf.blacklist.Load()
 	if v == nil {
 		return nil
 	}
-	dfa, ok := v.(*automaton.DFA)
+	m, ok := v.(*matcher.Matcher)
 	if !ok {
 		return nil
 	}
 
-	return dfa
+	return m
 }
 
 // ServeDNS evaluates r against the active DFAs and writes the response to w.
@@ -319,8 +319,8 @@ func (rf *RegFilter) StartWatcher() error {
 			}
 		},
 		OnUpdate: func(wl watcher.Snapshot, bl watcher.Snapshot) {
-			rf.SetWhitelist(wl.DFA)
-			rf.SetBlacklist(bl.DFA)
+			rf.SetWhitelist(wl.Matcher)
+			rf.SetBlacklist(bl.Matcher)
 			rf.wlSources.Store(wl.Sources)
 			rf.blSources.Store(bl.Sources)
 			rf.wlPatterns.Store(wl.Patterns)
@@ -330,11 +330,11 @@ func (rf *RegFilter) StartWatcher() error {
 				rf.metrics.BlacklistRules.Set(float64(bl.RuleCount))
 			}
 			log.Infof(
-				"DFAs updated: whitelist_active=%v whitelist_rules=%d whitelist_states=%d blacklist_active=%v blacklist_rules=%d blacklist_states=%d",
-				wl.DFA != nil,
+				"matchers updated: whitelist_active=%v whitelist_rules=%d whitelist_states=%d blacklist_active=%v blacklist_rules=%d blacklist_states=%d",
+				wl.Matcher != nil,
 				wl.RuleCount,
 				wl.StateCount,
-				bl.DFA != nil,
+				bl.Matcher != nil,
 				bl.RuleCount,
 				bl.StateCount,
 			)

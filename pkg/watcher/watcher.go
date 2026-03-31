@@ -14,9 +14,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/TomTonic/coredns-regfilter/pkg/automaton"
 	"github.com/TomTonic/coredns-regfilter/pkg/blockloader"
 	"github.com/TomTonic/coredns-regfilter/pkg/filterlist"
+	"github.com/TomTonic/coredns-regfilter/pkg/matcher"
 )
 
 // Logger is a minimal logging interface.
@@ -38,6 +38,16 @@ func (nopLogger) Infof(string, ...interface{}) {}
 // Errorf discards watcher errors when no logger is configured.
 func (nopLogger) Errorf(string, ...interface{}) {}
 
+// matcherLogger adapts a watcher Logger to the matcher.Logger interface.
+type matcherLogger struct {
+	inner Logger
+}
+
+// Infof delegates compile-progress messages to the watcher logger.
+func (a *matcherLogger) Infof(format string, args ...interface{}) {
+	a.inner.Infof(format, args...)
+}
+
 // Config configures the watcher.
 type Config struct {
 	WhitelistDir    string
@@ -54,7 +64,7 @@ type Config struct {
 
 // Snapshot describes one compiled filter set state.
 type Snapshot struct {
-	DFA        *automaton.DFA
+	Matcher    *matcher.Matcher
 	RuleCount  int
 	StateCount int
 	Sources    []string // rule source strings indexed by rule ID
@@ -333,9 +343,10 @@ func (w *dirWatcher) compileDir(dir, label string) (Snapshot, compileReport) {
 
 	report.RuleCount = len(rules)
 	compileStarted := time.Now()
-	dfa, err := automaton.CompileRules(rules, automaton.CompileOptions{
+	m, err := matcher.CompileRules(rules, matcher.CompileOptions{
 		MaxStates:      w.cfg.MaxStates,
 		CompileTimeout: w.cfg.MaxCompileTime,
+		Logger:         &matcherLogger{w.cfg.Logger},
 	})
 	compileElapsed := time.Since(compileStarted)
 	report.Duration = time.Since(started)
@@ -348,14 +359,14 @@ func (w *dirWatcher) compileDir(dir, label string) (Snapshot, compileReport) {
 	}
 
 	report.Status = compileStatusReady
-	report.StateCount = dfa.StateCount()
+	report.StateCount = m.StateCount()
 	w.logCompileReport(&report)
 
 	if w.cfg.OnCompile != nil {
 		w.cfg.OnCompile(label, compileElapsed)
 	}
 
-	return Snapshot{DFA: dfa, RuleCount: len(rules), StateCount: dfa.StateCount(), Sources: ruleSources(rules), Patterns: rulePatterns(rules)}, report
+	return Snapshot{Matcher: m, RuleCount: len(rules), StateCount: m.StateCount(), Sources: ruleSources(rules), Patterns: rulePatterns(rules)}, report
 }
 
 // logCompileReport emits one structured summary line for every compile attempt.

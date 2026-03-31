@@ -4,8 +4,21 @@
 
 `coredns-regfilter` is a CoreDNS plugin for DNS-layer domain filtering. It
 loads supported host-based rules from whitelist and blacklist directories,
-compiles them into deterministic finite automata (DFAs), and evaluates DNS
-queries against those DFAs on the request path.
+compiles them into a hybrid matching structure, and evaluates DNS queries
+against that structure on the request path.
+
+The hybrid matcher splits rules at compile time:
+
+- **Literal domain patterns** (typically 99%+ of real-world rules) are stored
+  in a hash-based suffix map for O(k) lookup, where k is the number of DNS
+  labels in the query name.
+- **Wildcard patterns** (those containing `*`) are compiled into a minimized
+  deterministic finite automaton (DFA) for O(n) matching, where n is the query
+  name length.
+
+This split keeps compilation fast and memory bounded for lists that are
+dominated by literal entries, while retaining full wildcard support through the
+DFA path.
 
 The design goal is not to implement a full browser filter engine. The plugin
 focuses on the subset of AdGuard, EasyList, and hosts-style syntax that can be
@@ -13,7 +26,7 @@ reduced to a pure domain decision at DNS time.
 
 The most important properties are:
 
-- predictable O(n) matching on the request path;
+- predictable matching on the request path (O(k) for literals, O(n) for wildcards);
 - atomic hot reloads without locking the hot path;
 - fail-open behavior when a reload fails or a directory is temporarily broken;
 - enough source metadata to explain matches in logs and offline tooling.
@@ -27,8 +40,38 @@ This document focuses on the runtime system behavior:
 - how whitelist and blacklist semantics are derived from directory context;
 - how reload failures, empty lists, and debug output are handled.
 
-The DFA construction details still matter, but they are an implementation
-mechanism rather than the primary architectural story.
+The internal construction details of the suffix map and DFA still matter, but
+they are implementation mechanisms rather than the primary architectural story.
+
+## Package Architecture
+
+The matching subsystem is organized into three packages with strict dependency
+directions:
+
+```text
+pkg/matcher          (compositor)
+    ├── pkg/suffixmap    (literal domain lookup, no external deps)
+    └── pkg/automaton    (wildcard DFA, no external deps)
+```
+
+- **`pkg/automaton`** is a self-contained DFA compiler and matcher. It accepts
+  `automaton.Pattern` values (expression string + rule ID), builds a Thompson
+  NFA, runs subset construction, optionally applies Hopcroft minimization, and
+  produces an array-based DFA. It has no dependency on filter list parsing or
+  the suffix map.
+
+- **`pkg/suffixmap`** is a hash-based lookup structure for literal domain
+  patterns implementing `||domain^` semantics: a stored entry `example.com`
+  matches both `example.com` and any subdomain like `sub.example.com`. It has
+  no dependency on the automaton or filter list parsing.
+
+- **`pkg/matcher`** is the compositor that callers use. It receives parsed
+  `filterlist.Rule` values, classifies them as literal or wildcard, delegates
+  to `suffixmap.New` and `automaton.Compile`, and combines the results behind
+  a single `Matcher.Match` method.
+
+The watcher, plugin handler, and CLI tool all depend on `pkg/matcher` only.
+They do not import `pkg/automaton` or `pkg/suffixmap` directly.
 
 ## Runtime Architecture
 
@@ -55,9 +98,9 @@ watcher
        |      - whitelist: keep allow rules by default
        |      - whitelist + invert_whitelist: keep deny-style rules
        |
-       +--> CompileRules
+       +--> CompileRules  (matcher splits: literals → suffix map, wildcards → DFA)
        |
-       +--> Snapshot{DFA, rule count, state count, sources, patterns}
+       +--> Snapshot{Matcher, rule count, state count, sources, patterns}
        |
        +--> atomic swap of active whitelist / blacklist snapshots
 ```
@@ -65,7 +108,7 @@ watcher
 Two details are easy to miss but central to the design:
 
 - `regfilter` only sees queries if it appears early enough in the generated CoreDNS plugin chain, and in practice it must run before terminal plugins such as `forward`.
-- The runtime does not swap raw DFAs alone; it swaps a snapshot that also carries rule count, source file references, and original patterns for logging and diagnostics.
+- The runtime does not swap raw matchers alone; it swaps a snapshot that also carries rule count, source file references, and original patterns for logging and diagnostics.
 
 ## CoreDNS Integration
 
@@ -108,7 +151,7 @@ by the text of the rule. They are also shaped by the directory being compiled.
 
 ### Directory-Specific Semantics
 
-After parsing and before DFA compilation, the watcher filters rules based on
+After parsing and before matcher compilation, the watcher filters rules based on
 which directory is being compiled.
 
 Blacklist directory:
@@ -136,17 +179,20 @@ For each directory, the watcher executes this pipeline:
 
 1. load and parse all supported files;
 2. filter the resulting rules for whitelist or blacklist semantics;
-3. compile the selected rules with `automaton.CompileRules`;
-4. build a snapshot containing DFA, rule count, state count, sources, and patterns;
+3. compile the selected rules with `matcher.CompileRules`;
+4. build a snapshot containing the Matcher, rule count, state count, sources, and patterns;
 5. publish the new snapshot atomically if compilation succeeded.
 
-The automaton compiler currently uses:
+The matcher splits rules internally:
 
-- Thompson-style NFA construction for individual patterns;
-- NFA combination into a single machine;
-- subset construction to build a DFA;
-- Hopcroft minimization by default;
-- a cache-friendly array-based DFA representation for runtime matching.
+- Patterns without `*` are lowercased and stored in a hash-based suffix map.
+  The suffix map implements `||domain^` semantics: a stored entry `example.com`
+  matches both `example.com` itself and any subdomain such as `sub.example.com`.
+  Lookup cost is O(k) where k is the number of DNS labels.
+
+- Patterns containing `*` are compiled through the automaton package:
+  Thompson-style NFA construction, subset construction, optional Hopcroft
+  minimization, and a cache-friendly array-based DFA for O(n) matching.
 
 That internal pipeline is useful to know, but the externally visible contract
 is simpler: a directory compile either yields a new immutable snapshot or the
@@ -165,7 +211,7 @@ The reload model is intentionally fail-open:
 
 - if a reload fails, the last successful snapshot for that directory stays active;
 - if a directory becomes empty or yields no supported rules, that directory's
-       active DFA becomes empty for the next successful snapshot;
+       active matcher becomes empty for the next successful snapshot;
 - startup does not fail just because a configured directory is empty or contains
        only unsupported rules;
 - startup fails only when the watcher infrastructure itself cannot be started.
@@ -179,14 +225,14 @@ problems.
 The request path is intentionally short:
 
 1. normalize the queried name to lowercase without the trailing root dot;
-2. match against the active whitelist DFA;
+2. match against the active whitelist matcher (suffix map first, then DFA);
 3. if matched, allow the query to continue to the next plugin;
-4. otherwise match against the active blacklist DFA;
+4. otherwise match against the active blacklist matcher;
 5. if matched, synthesize the configured blocked response;
 6. otherwise forward unchanged to the next plugin.
 
-The plugin stores the currently active DFA snapshots in atomic state, so the
-hot path performs no lock acquisition.
+The plugin stores the currently active matcher snapshots in atomic state, so
+the hot path performs no lock acquisition.
 
 ## Response Modes
 
@@ -216,13 +262,13 @@ When `debug` is enabled:
 - whitelist matches log the same information;
 - unmatched queries log `no match`.
 
-This is why the snapshot contains more than just the DFA pointer.
+This is why the snapshot contains more than just the matcher pointer.
 
 ## Resource Limits
 
 | Parameter | Default | Purpose |
 |-----------|---------|---------|
-| `max_states` | 200000 | Bounds DFA size to limit memory growth |
+| `max_states` | 200000 | Bounds wildcard DFA size to limit memory growth |
 | `compile_timeout` | `30s` | Bounds per-directory compile time |
 | `debounce` | `300ms` | Coalesces bursts of file changes |
 
@@ -231,14 +277,18 @@ pathological filter list safe, but they keep failure modes bounded and visible.
 
 ## Performance Characteristics
 
-- matching is O(n) in the query name length;
+- literal matching is O(k) in the number of DNS labels (hash lookups);
+- wildcard matching is O(n) in the query name length (DFA traversal);
 - the hot path uses immutable snapshots and atomic reads only;
-- compile cost depends on the selected rule set and DFA minimization work;
-- memory use is dominated by DFA state count plus the retained source metadata.
+- compile cost for literals is O(m) where m is the number of literal rules;
+- compile cost for wildcards depends on the pattern set and DFA minimization;
+- memory is dominated by the suffix map entries for literals and the DFA state
+  count for wildcards, plus the retained source metadata.
 
-The exact compile complexity is intentionally not specified more tightly here,
-because the subset-construction and minimization steps depend heavily on the
-shape of the input rule set.
+Because real-world filter lists are typically 99%+ literal domain entries,
+the suffix map handles the bulk of matching with hash-based lookup. Only the
+small wildcard fraction goes through the DFA path. This hybrid approach
+combines fast compilation with predictable runtime performance.
 
 ### Measured Reference Scenario
 
@@ -251,15 +301,26 @@ machine (`linux/amd64`, Go `1.26.1`, AMD Ryzen 9 7900), with blacklist rule
 selection applied and `max_states=0` to observe the uncapped compile:
 
 - parsed blacklist rules: 160798
+- of those, about 99.8% are literal domain entries and about 0.2% are wildcards
+- the literal entries are stored in a hash-based suffix map (fast, bounded memory)
+- only the wildcard fraction is compiled through the DFA pipeline
+
+With the hybrid matching approach, the DFA compilation operates on hundreds of
+wildcard patterns rather than 160k+ rules. The suffix map handles the literal
+bulk in linear time with negligible memory overhead compared to the original
+pure-DFA approach.
+
+The original pure-DFA measurement (before the hybrid split) produced:
+
 - compiled DFA states: 2273841
 - end-to-end parse plus compile wall-clock time: 4m18.67s
 - peak resident memory during that run: 9964356 KiB (about 9.5 GiB)
 
-Two practical conclusions follow from that measurement:
+The hybrid matcher eliminates this bottleneck for typical lists. Two practical
+conclusions from the original measurement remain relevant:
 
-- this combined sample pair is far above the default `max_states=200000` limit;
-- large real-world lists can produce much more temporary allocation traffic
-       during compilation than their final resident DFA footprint suggests.
+- pathological wildcard-heavy lists can still produce large DFAs;
+- the `max_states` limit is an important safeguard for the DFA path.
 
 For reproducible benchmarking in the repository, see
 `BenchmarkCompileRealisticBlacklist` and
@@ -273,8 +334,8 @@ All metrics are exported with the `coredns_regfilter_` prefix.
 
 | Metric | Type | Meaning |
 |--------|------|---------|
-| `whitelist_checks_total` | Counter | Queries evaluated against the whitelist DFA |
-| `blacklist_checks_total` | Counter | Queries evaluated against the blacklist DFA |
+| `whitelist_checks_total` | Counter | Queries evaluated against the whitelist matcher |
+| `blacklist_checks_total` | Counter | Queries evaluated against the blacklist matcher |
 | `whitelist_hits_total` | Counter | Queries accepted because the whitelist matched |
 | `blacklist_hits_total` | Counter | Queries blocked because the blacklist matched |
 | `match_duration_seconds{result=...}` | Summary | End-to-end plugin matching duration |
