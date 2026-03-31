@@ -1,7 +1,7 @@
-// Package plugin implements the CoreDNS regfilter plugin.
+// Package regfilter implements the CoreDNS regfilter plugin.
 // It intercepts DNS queries and checks them against whitelist and blacklist
 // DFAs, blocking or allowing queries according to configuration.
-package plugin
+package regfilter
 
 import (
 	"context"
