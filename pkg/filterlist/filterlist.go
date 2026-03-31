@@ -43,13 +43,17 @@ type Rule struct {
 // concrete logging implementation used by callers.
 type Logger interface {
 	Warnf(format string, args ...interface{})
+	Infof(format string, args ...interface{})
 }
 
-// nopLogger discards warnings when callers pass nil for the Logger parameter.
+// nopLogger discards log output when callers pass nil for the Logger parameter.
 type nopLogger struct{}
 
 // Warnf discards parser warnings when callers do not provide a logger.
 func (nopLogger) Warnf(string, ...interface{}) {}
+
+// Infof discards informational messages when callers do not provide a logger.
+func (nopLogger) Infof(string, ...interface{}) {}
 
 // ParseFile loads one filter list from path and returns the parsed Rule slice.
 //
@@ -89,6 +93,11 @@ func ParseFile(path string, logger Logger) (rules []Rule, err error) {
 		}
 		rule.Source = fmt.Sprintf("%s:%d", cleanPath, lineNum)
 		rules = append(rules, rule)
+		// Multi-domain hosts lines may contain additional domains after the first.
+		for _, extra := range extraHostsDomains(line, rule.IsAllow) {
+			extra.Source = rule.Source
+			rules = append(rules, extra)
+		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
 		return rules, fmt.Errorf("filterlist: read %s: %w", cleanPath, scanErr)
@@ -182,8 +191,8 @@ func tryParseHosts(line string, isAllow bool) (Rule, error) {
 		return Rule{}, errNotHosts
 	}
 
-	// Take the first domain (ignore additional domains on the same line for simplicity,
-	// but a production version could emit multiple rules).
+	// Take the first domain (additional domains on the same line are
+	// handled by extraHostsDomains at the ParseFile level).
 	domain := strings.ToLower(fields[1])
 
 	// Convert internationalized domain names (IDN) to Punycode.
@@ -196,11 +205,7 @@ func tryParseHosts(line string, isAllow bool) (Rule, error) {
 	}
 
 	// Skip localhost entries
-	if domain == "localhost" || domain == "localhost.localdomain" ||
-		domain == "local" || domain == "broadcasthost" ||
-		domain == "ip6-localhost" || domain == "ip6-loopback" ||
-		domain == "ip6-localnet" || domain == "ip6-mcastprefix" ||
-		domain == "ip6-allnodes" || domain == "ip6-allrouters" {
+	if isLocalhostName(domain) {
 		return Rule{}, errSkip
 	}
 
@@ -214,6 +219,52 @@ func tryParseHosts(line string, isAllow bool) (Rule, error) {
 // isHostsIP returns true if s looks like a common hosts-file IP address.
 func isHostsIP(s string) bool {
 	return s == "0.0.0.0" || s == "127.0.0.1" || s == "::1" || s == "::" || s == "::0" || s == "fe80::1%lo0"
+}
+
+// isLocalhostName returns true for well-known localhost and link-local names
+// commonly found in hosts files that should not be treated as block/allow rules.
+func isLocalhostName(domain string) bool {
+	switch domain {
+	case "localhost", "localhost.localdomain", "local", "broadcasthost",
+		"ip6-localhost", "ip6-loopback", "ip6-localnet",
+		"ip6-mcastprefix", "ip6-allnodes", "ip6-allrouters":
+		return true
+	}
+	return false
+}
+
+// extraHostsDomains extracts additional domains (index 2+) from a multi-domain
+// hosts-style line. It returns nil when the line is not a hosts entry or has only
+// one domain. ParseFile calls this after ParseLine to emit all domains.
+func extraHostsDomains(line string, isAllow bool) []Rule {
+	work := strings.TrimPrefix(strings.TrimSpace(line), "@@")
+	fields := strings.Fields(work)
+	if len(fields) <= 2 || !isHostsIP(fields[0]) {
+		return nil
+	}
+
+	var extra []Rule
+	for _, field := range fields[2:] {
+		if strings.HasPrefix(field, "#") {
+			break
+		}
+		domain := strings.ToLower(field)
+		if needsIDNConversion(domain) {
+			ascii, err := toASCII(domain)
+			if err != nil {
+				continue
+			}
+			domain = ascii
+		}
+		if isLocalhostName(domain) {
+			continue
+		}
+		if !isValidDNSName(domain) {
+			continue
+		}
+		extra = append(extra, Rule{Pattern: domain, IsAllow: isAllow})
+	}
+	return extra
 }
 
 // parseAdGuardPattern converts an AdGuard/EasyList pattern string into a
@@ -286,7 +337,10 @@ func containsUnsupportedModifier(mods string) bool {
 		if p == "" {
 			continue
 		}
-		// We support "important" and "document" as no-ops for domain filters.
+		// Strip the ABP negation prefix — at DNS level negation is meaningless,
+		// so ~third-party is treated like third-party (both are no-ops).
+		p = strings.TrimPrefix(p, "~")
+		// Modifiers that are no-ops for DNS-level domain filtering.
 		// Everything else is unsupported.
 		switch p {
 		case "important", "document", "all", "first-party", "1p", "third-party", "3p",
@@ -299,24 +353,25 @@ func containsUnsupportedModifier(mods string) bool {
 	return false
 }
 
+// unsupportedNonNetworkMarkers lists substrings that identify cosmetic and scriptlet rules.
+var unsupportedNonNetworkMarkers = []string{
+	"##",
+	"#@#",
+	"#?#",
+	"#@?#",
+	"#$#",
+	"#@$#",
+	"#$?#",
+	"#@$?#",
+	"#%#",
+	"#@%#",
+	"$$",
+	"$@$",
+}
+
 // containsUnsupportedNonNetworkMarker detects cosmetic and scriptlet rule syntax.
 func containsUnsupportedNonNetworkMarker(line string) bool {
-	markers := []string{
-		"##",
-		"#@#",
-		"#?#",
-		"#@?#",
-		"#$#",
-		"#@$#",
-		"#$?#",
-		"#@$?#",
-		"#%#",
-		"#@%#",
-		"$$",
-		"$@$",
-	}
-
-	for _, marker := range markers {
+	for _, marker := range unsupportedNonNetworkMarkers {
 		if strings.Contains(line, marker) {
 			return true
 		}

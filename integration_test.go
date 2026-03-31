@@ -18,6 +18,8 @@ func (l *testLogger) Warnf(format string, _ ...interface{}) {
 	l.warnings = append(l.warnings, format)
 }
 
+func (*testLogger) Infof(string, ...interface{}) {}
+
 func testdataDir() string {
 	_, filename, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(filename), "testdata", "filterlists")

@@ -429,31 +429,86 @@ func TestParseLineTrailingDollar(t *testing.T) {
 	}
 }
 
-// TestParseLineNegatedModifiers verifies that users get an explicit rejection for semantics-changing negated modifiers in the filterlist parser by asserting that such rules return errors.
+// TestParseLineNegatedModifiers verifies that users get correct handling of negated modifiers in the filterlist parser.
+// Negated DNS-level no-op modifiers like $~third-party are explicitly accepted (the negation is meaningless at DNS level).
+// Truly unsupported modifiers are still rejected even when combined with accepted negated ones.
 func TestParseLineNegatedModifiers(t *testing.T) {
-	// Negated modifiers like $~third-party should be rejected.
-	unsupported := []string{
+	// Negated no-op modifiers should be accepted — at DNS level,
+	// ~third-party is as meaningless as third-party.
+	accepted := []string{
 		"||example.com^$~third-party",
+		"||example.com^$~document",
+		"||example.com^$~first-party,important",
+	}
+	for _, line := range accepted {
+		_, err := ParseLine(line)
+		if err != nil {
+			t.Errorf("ParseLine(%q) unexpected error: %v", line, err)
+		}
+	}
+
+	// Unsupported modifiers are still rejected.
+	unsupported := []string{
 		"||example.com^$~third-party,xmlhttprequest",
 		"||example.com^$script,domain=other.com",
 	}
 	for _, line := range unsupported {
 		_, err := ParseLine(line)
 		if err == nil || errors.Is(err, errSkip) {
-			t.Errorf("ParseLine(%q) expected non-skip error for negated modifier, got %v", line, err)
+			t.Errorf("ParseLine(%q) expected non-skip error for unsupported modifier, got %v", line, err)
 		}
 	}
 }
 
 // TestParseLineMultiDomainHosts verifies that users importing multi-domain hosts lines still get a deterministic primary rule in the filterlist parser by asserting that the first host is selected.
 func TestParseLineMultiDomainHosts(t *testing.T) {
-	// Hosts files can list multiple domains; we take the first one.
+	// ParseLine returns only the first domain; ParseFile emits all domains.
 	rule, err := ParseLine("0.0.0.0 first.example.com second.example.com")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rule.Pattern != "first.example.com" {
 		t.Errorf("pattern = %q, want \"first.example.com\"", rule.Pattern)
+	}
+}
+
+// TestParseFileMultiDomainHosts verifies that users importing hosts files
+// with multiple domains per line get all domains as separate block rules
+// in the filterlist package. This ensures full coverage of real-world hosts
+// files where a single line may list several ad/tracker domains.
+//
+// It writes a hosts-style file with two multi-domain lines and asserts that
+// ParseFile returns one Rule per domain (excluding inline comments).
+func TestParseFileMultiDomainHosts(t *testing.T) {
+	dir := t.TempDir()
+	content := `# multi-domain hosts
+0.0.0.0 a.example.com b.example.com c.example.com
+127.0.0.1 d.example.com e.example.com # inline
+`
+	path := filepath.Join(dir, "multi.txt")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := ParseFile(path, nil)
+	if err != nil {
+		t.Fatalf("ParseFile error: %v", err)
+	}
+
+	want := []string{
+		"a.example.com", "b.example.com", "c.example.com",
+		"d.example.com", "e.example.com",
+	}
+	if len(rules) != len(want) {
+		t.Fatalf("got %d rules, want %d: %v", len(rules), len(want), rules)
+	}
+	for i, r := range rules {
+		if r.Pattern != want[i] {
+			t.Errorf("rules[%d].Pattern = %q, want %q", i, r.Pattern, want[i])
+		}
+		if r.Source == "" {
+			t.Errorf("rules[%d] has empty source", i)
+		}
 	}
 }
 
@@ -638,3 +693,5 @@ func (l *testLogger) Warnf(format string, args ...interface{}) {
 		l.warnFunc(format, args...)
 	}
 }
+
+func (*testLogger) Infof(string, ...interface{}) {}

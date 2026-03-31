@@ -58,7 +58,7 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 // TestRunValidateCompilesRules verifies that operators can validate filter directories from the CLI package by asserting that run reports parsed rules, emits parser warnings, and returns success for compilable input.
 func TestRunValidateCompilesRules(t *testing.T) {
 	blDir := t.TempDir()
-	writeFilterFile(t, blDir, "rules.txt", "||ads.example.com^\n## cosmetic\n")
+	writeFilterFile(t, blDir, "rules.txt", "||ads.example.com^\nexample.com##.ad-banner\n")
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"validate", "--blacklist", blDir}, &stdout, &stderr)
@@ -116,8 +116,8 @@ func TestRunMatchReportsPolicyDecision(t *testing.T) {
 			if !strings.Contains(stdout.String(), tt.wantToken) {
 				t.Fatalf("stdout = %q, want token %q", stdout.String(), tt.wantToken)
 			}
-			if stderr.Len() != 0 {
-				t.Fatalf("stderr = %q, want empty output", stderr.String())
+			if strings.Contains(stderr.String(), "WARN:") || strings.Contains(stderr.String(), "ERROR:") {
+				t.Fatalf("stderr = %q, want no warnings or errors", stderr.String())
 			}
 		})
 	}
@@ -145,8 +145,8 @@ func TestRunDumpDotWritesOutput(t *testing.T) {
 	if !strings.Contains(stdout.String(), "DOT written") {
 		t.Fatalf("stdout = %q, want success output", stdout.String())
 	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty output", stderr.String())
+	if strings.Contains(stderr.String(), "WARN:") || strings.Contains(stderr.String(), "ERROR:") {
+		t.Fatalf("stderr = %q, want no warnings or errors", stderr.String())
 	}
 }
 
