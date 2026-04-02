@@ -44,38 +44,36 @@ var dnsAlphabet [AlphabetSize]rune
 
 func init() {
 	for i := range AlphabetSize {
-		dnsAlphabet[i] = IndexToRune(i)
+		dnsAlphabet[i] = indexToRune(i)
 	}
 }
 
-// RuneToIndex maps r to its DFA transition index.
+// runeToIndex maps r to its DFA transition index.
 //
-// The r parameter must be a lowercase DNS character from the supported
-// alphabet a-z, 0-9, '-', or '.'. The return value is the array index used by
-// DFAState.Trans, or -1 when r is outside that alphabet. Callers typically use
-// RuneToIndex on hot matching paths before following a transition.
-func RuneToIndex(r rune) int {
+// Returns a byte in [0, AlphabetSize) for valid DNS characters (a-z, 0-9,
+// '-', '.'), or noAlphabetIndex (0xFF) when r is outside that alphabet.
+// Used on hot matching paths and during NFA construction.
+func runeToIndex(r rune) byte {
 	switch {
 	case r >= 'a' && r <= 'z':
-		return int(r - 'a')
+		return byte(r - 'a') //nolint:gosec // r∈['a','z'], r-'a'∈[0,25] fits byte
 	case r >= '0' && r <= '9':
-		return 26 + int(r-'0')
+		return 26 + byte(r-'0') //nolint:gosec // r∈['0','9'], 26+r-'0'∈[26,35] fits byte
 	case r == '-':
 		return 36
 	case r == '.':
 		return 37
 	default:
-		return -1
+		return noAlphabetIndex
 	}
 }
 
-// IndexToRune maps i back to the DNS character used at that transition slot.
+// indexToRune maps i back to the DNS character used at that transition slot.
 //
 // The i parameter must be in the inclusive range [0, AlphabetSize). The return
 // value is the DNS rune stored at that index, or -1 when i is outside the
-// supported alphabet. This is mainly useful for diagnostics such as DOT output
-// and test assertions rather than the runtime match path.
-func IndexToRune(i int) rune {
+// supported alphabet. Mainly useful for diagnostics such as DOT output.
+func indexToRune(i int) rune {
 	switch {
 	case i >= 0 && i <= 25:
 		return rune('a' + i)
@@ -93,7 +91,8 @@ func IndexToRune(i int) rune {
 // ---- NFA ----
 
 const epsilon rune = 0 // epsilon transitions use rune 0
-const noTransitionState = -1
+const noTransitionState uint32 = math.MaxUint32
+const noAlphabetIndex byte = 0xFF
 
 const (
 	nfaFlagHasLiteral uint8 = 1 << iota
@@ -108,11 +107,11 @@ const (
 // Storing those paths directly is markedly smaller and more cache-friendly
 // than allocating a general-purpose map for every state.
 type nfaState struct {
-	literalTo    int32
-	anyDNSTo     int32
-	literalIndex uint8
-	flags        uint8
-	epsilon      []int32
+	literalTo    uint32
+	anyDNSTo     uint32
+	literalIndex byte
+	flags        byte
+	epsilon      []uint32
 	ruleIDs      []uint32
 }
 
@@ -153,11 +152,6 @@ type closureScratch struct {
 	keyBuf []byte
 }
 
-// newNFA allocates an empty NFA with no states.
-func newNFA() *nfa {
-	return &nfa{}
-}
-
 // newClosureScratch preallocates reusable state for repeated epsilon closures.
 func newClosureScratch(stateCount int) *closureScratch {
 	return &closureScratch{marks: make([]uint32, stateCount)}
@@ -167,30 +161,35 @@ func newClosureScratch(stateCount int) *closureScratch {
 func (n *nfa) addState() int {
 	id := len(n.states)
 	n.states = append(n.states, nfaState{
-		literalTo: int32(noTransitionState),
-		anyDNSTo:  int32(noTransitionState),
+		literalTo: noTransitionState,
+		anyDNSTo:  noTransitionState,
 	})
 	return id
 }
 
 // addTrans records a labeled transition from one NFA state to another.
-func (n *nfa) addTrans(from int, r rune, to int) {
+func (n *nfa) addTrans(from int, r rune, to int) error {
 	state := &n.states[from]
 	if r == epsilon {
-		state.epsilon = append(state.epsilon, int32(to))
-		return
+		state.epsilon = append(state.epsilon, uint32(to)) //nolint:gosec // to=addState()≥0, fits uint32
+		return nil
 	}
 
-	state.literalIndex = uint8(RuneToIndex(r))
-	state.literalTo = int32(to)
+	idx := runeToIndex(r)
+	if idx == noAlphabetIndex {
+		return fmt.Errorf("unsupported character %q in pattern", r)
+	}
+
+	state.literalIndex = idx
+	state.literalTo = uint32(to) //nolint:gosec // to=addState()≥0, fits uint32
 	state.flags |= nfaFlagHasLiteral
+	return nil
 }
 
 // addAnyDNSTrans records a transition taken for any supported DNS character.
 func (n *nfa) addAnyDNSTrans(from int, to int) {
-	state := &n.states[from]
-	state.anyDNSTo = int32(to)
-	state.flags |= nfaFlagHasAnyDNS
+	n.states[from].anyDNSTo = uint32(to) //nolint:gosec // to=addState()≥0, fits uint32
+	n.states[from].flags |= nfaFlagHasAnyDNS
 }
 
 // buildPatternNFA constructs a Thompson NFA for a single pattern.
@@ -206,12 +205,16 @@ func buildPatternNFA(pattern string, ruleID uint32) (*nfa, error) {
 		case r == '*':
 			// Wildcard: self-loop on the DNS character class.
 			loopState := n.addState()
-			n.addTrans(current, epsilon, loopState)
+			if err := n.addTrans(current, epsilon, loopState); err != nil {
+				return nil, err
+			}
 			n.addAnyDNSTrans(loopState, loopState)
 			current = loopState
-		case RuneToIndex(r) >= 0:
+		case runeToIndex(r) != noAlphabetIndex:
 			next := n.addState()
-			n.addTrans(current, r, next)
+			if err := n.addTrans(current, r, next); err != nil {
+				return nil, err
+			}
 			current = next
 		default:
 			return nil, fmt.Errorf("unsupported character %q in pattern", r)
@@ -226,7 +229,7 @@ func buildPatternNFA(pattern string, ruleID uint32) (*nfa, error) {
 
 // combineNFAs merges multiple NFAs into one with a new start state connected
 // via epsilon transitions.
-func combineNFAs(nfas []*nfa) *nfa {
+func combineNFAs(nfas []*nfa) (*nfa, error) {
 	totalStates := 1
 	for _, sub := range nfas {
 		totalStates += len(sub.states)
@@ -236,7 +239,7 @@ func combineNFAs(nfas []*nfa) *nfa {
 	combined.start = newStart
 
 	for _, sub := range nfas {
-		offset := len(combined.states)
+		offset := uint32(len(combined.states)) //nolint:gosec // len() is always ≥0
 		// Copy all states
 		for _, s := range sub.states {
 			newID := combined.addState()
@@ -245,23 +248,28 @@ func combineNFAs(nfas []*nfa) *nfa {
 		}
 		// Rewrite transitions with offset
 		for i, s := range sub.states {
+			iOff := i + int(offset)
 			for _, t := range s.epsilon {
-				combined.addTrans(i+offset, epsilon, int(t)+offset)
+				if err := combined.addTrans(iOff, epsilon, int(t+offset)); err != nil {
+					return nil, err
+				}
 			}
 			if s.hasLiteralTransition() {
-				combined.states[i+offset].literalIndex = s.literalIndex
-				combined.states[i+offset].literalTo = s.literalTo + int32(offset)
-				combined.states[i+offset].flags |= nfaFlagHasLiteral
+				combined.states[iOff].literalIndex = s.literalIndex
+				combined.states[iOff].literalTo = s.literalTo + offset
+				combined.states[iOff].flags |= nfaFlagHasLiteral
 			}
 			if s.hasAnyDNSTransition() {
-				combined.states[i+offset].anyDNSTo = s.anyDNSTo + int32(offset)
-				combined.states[i+offset].flags |= nfaFlagHasAnyDNS
+				combined.states[iOff].anyDNSTo = s.anyDNSTo + offset
+				combined.states[iOff].flags |= nfaFlagHasAnyDNS
 			}
 		}
 		// Epsilon from new start to sub's start
-		combined.addTrans(newStart, epsilon, sub.start+offset)
+		if err := combined.addTrans(newStart, epsilon, sub.start+int(offset)); err != nil {
+			return nil, err
+		}
 	}
-	return combined
+	return combined, nil
 }
 
 // epsilonClosure computes the set of states reachable from the given set via
@@ -289,10 +297,10 @@ func epsilonClosure(cs *closureScratch, n *nfa, states []int) []int {
 		stack = stack[:len(stack)-1]
 		result = append(result, s)
 		for _, t := range n.states[s].epsilon {
-			if cs.marks[int(t)] == cs.stamp {
+			if cs.marks[t] == cs.stamp {
 				continue
 			}
-			cs.marks[int(t)] = cs.stamp
+			cs.marks[t] = cs.stamp
 			stack = append(stack, int(t))
 		}
 	}
@@ -307,11 +315,11 @@ func epsilonClosure(cs *closureScratch, n *nfa, states []int) []int {
 
 // intermediateDFAState is one state in the intermediate DFA.
 //
-// Transitions are stored in a compact, fixed-size array indexed by
-// RuneToIndex to reduce heap churn during subset construction and Hopcroft
-// minimization.
+// Transitions are stored in a compact, fixed-size array indexed by the
+// DNS alphabet position (runeToIndex) to reduce heap churn during subset
+// construction and Hopcroft minimization.
 type intermediateDFAState struct {
-	trans   [AlphabetSize]int32
+	trans   [AlphabetSize]uint32
 	accept  bool
 	ruleIDs []uint32
 }
@@ -324,7 +332,7 @@ type intermediateDFA struct {
 }
 
 type subsetWorkItem struct {
-	id     int
+	id     uint32
 	states []int
 }
 
@@ -468,7 +476,10 @@ func Compile(patterns []Pattern, opts CompileOptions) (*DFA, error) {
 
 	// Combine into single NFA.
 	combineStart := time.Now()
-	combined := combineNFAs(nfas)
+	combined, err := combineNFAs(nfas)
+	if err != nil {
+		return nil, err
+	}
 	logf("automaton: NFA combine: %v (%d NFA states)", time.Since(combineStart), len(combined.states))
 
 	// Subset construction: NFA → map-based DFA.
@@ -520,98 +531,112 @@ func (md *intermediateDFA) toDFA() *DFA {
 	return d
 }
 
+// subsetBuilder holds the mutable state shared between subsetConstruction and
+// its getOrCreateState method, avoiding closure captures.
+type subsetBuilder struct {
+	nfa         *nfa
+	md          *intermediateDFA
+	closures    *closureScratch
+	stateMap    map[string]uint32
+	worklist    []subsetWorkItem
+	transitions subsetTransitionScratch
+	maxStates   int
+}
+
+// getOrCreateState returns the uint32 DFA-state ID for the epsilon closure of
+// source, creating a new state when no matching closure exists yet.
+//
+// The source parameter is a list of NFA state IDs. Returns an error when the
+// set-key encoding fails or MaxStates would be exceeded.
+func (b *subsetBuilder) getOrCreateState(source []int) (uint32, error) {
+	closure := epsilonClosure(b.closures, b.nfa, source)
+	key, err := makeSetKey(&b.closures.keyBuf, closure)
+	if err != nil {
+		return 0, err
+	}
+	if existingID, exists := b.stateMap[key]; exists {
+		return existingID, nil
+	}
+	if b.maxStates > 0 && len(b.md.states) >= b.maxStates {
+		return 0, fmt.Errorf("automaton: exceeded MaxStates limit (%d)", b.maxStates)
+	}
+	newID := uint32(len(b.md.states)) //nolint:gosec // bounded by maxStates, len() is always ≥0
+	b.stateMap[key] = newID
+	accept, ruleIDs := computeAccept(b.nfa, closure)
+	b.md.states = append(b.md.states, newIntermediateDFAState(accept, ruleIDs))
+	b.worklist = append(b.worklist, subsetWorkItem{id: newID, states: slices.Clone(closure)})
+	return newID, nil
+}
+
 // subsetConstruction converts an NFA to an intermediate DFA using the classic algorithm.
 func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediateDFA, error) {
 	md := &intermediateDFA{states: make([]intermediateDFAState, 0, 1024)}
-	closures := newClosureScratch(len(n.states))
-	transitions := &subsetTransitionScratch{}
-	worklist := make([]subsetWorkItem, 0, 256)
-
-	stateMap := make(map[string]int, 1024)
-	getOrCreateState := func(source []int) (int, error) {
-		closure := epsilonClosure(closures, n, source)
-		key, err := makeSetKey(&closures.keyBuf, closure)
-		if err != nil {
-			return 0, err
-		}
-
-		if existingID, exists := stateMap[key]; exists {
-			return existingID, nil
-		}
-
-		if maxStates > 0 && len(md.states) >= maxStates {
-			return 0, fmt.Errorf("automaton: exceeded MaxStates limit (%d)", maxStates)
-		}
-
-		newID := len(md.states)
-		stateMap[key] = newID
-		accept, ruleIDs := computeAccept(n, closure)
-		md.states = append(md.states, newIntermediateDFAState(accept, ruleIDs))
-		worklist = append(worklist, subsetWorkItem{id: newID, states: slices.Clone(closure)})
-		return newID, nil
+	b := &subsetBuilder{
+		nfa:       n,
+		md:        md,
+		closures:  newClosureScratch(len(n.states)),
+		stateMap:  make(map[string]uint32, 1024),
+		maxStates: maxStates,
 	}
 
-	startResult := epsilonClosure(closures, n, []int{n.start})
-	startKey, err := makeSetKey(&closures.keyBuf, startResult)
+	startResult := epsilonClosure(b.closures, n, []int{n.start})
+	startKey, err := makeSetKey(&b.closures.keyBuf, startResult)
 	if err != nil {
 		return nil, err
 	}
-	stateMap[startKey] = 0
+	b.stateMap[startKey] = 0
 	md.start = 0
 
 	accept, ruleIDs := computeAccept(n, startResult)
 	md.states = append(md.states, newIntermediateDFAState(accept, ruleIDs))
+	b.worklist = append(b.worklist, subsetWorkItem{id: 0, states: slices.Clone(startResult)})
 
-	worklist = append(worklist, subsetWorkItem{id: 0, states: slices.Clone(startResult)})
-
-	for len(worklist) > 0 {
+	for len(b.worklist) > 0 {
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			return nil, errors.New("automaton: subset construction timeout")
 		}
 
-		currentItem := worklist[0]
-		worklist = worklist[1:]
+		currentItem := b.worklist[0]
+		b.worklist = b.worklist[1:]
 		current := currentItem.states
 		currentID := currentItem.id
-		transitions.collect(n, current)
+		b.transitions.collect(n, current)
 
-		wildcardID := int32(noTransitionState)
-		if len(transitions.wildcardTargets) > 0 {
-			id, wildcardErr := getOrCreateState(transitions.wildcardTargets)
-			if wildcardErr != nil {
-				return nil, wildcardErr
+		if len(b.transitions.wildcardTargets) > 0 {
+			wildcardID, wErr := b.getOrCreateState(b.transitions.wildcardTargets)
+			if wErr != nil {
+				return nil, wErr
 			}
-			wildcardID = int32(id)
 			for idx := range AlphabetSize {
 				md.states[currentID].trans[idx] = wildcardID
 			}
 		}
 
-		mask := transitions.activeLiteralMask
+		mask := b.transitions.activeLiteralMask
 		for mask != 0 {
 			idx := bits.TrailingZeros64(mask)
 			mask &^= uint64(1) << idx
 
-			literalTargets := transitions.literalTargets[idx]
-			if len(transitions.wildcardTargets) == 0 {
-				stateID, stateErr := getOrCreateState(literalTargets)
+			literalTargets := b.transitions.literalTargets[idx]
+			if len(b.transitions.wildcardTargets) == 0 {
+				stateID, stateErr := b.getOrCreateState(literalTargets)
 				if stateErr != nil {
 					return nil, stateErr
 				}
-				md.states[currentID].trans[idx] = int32(stateID)
+				md.states[currentID].trans[idx] = stateID
 				continue
 			}
 
-			moved := transitions.moved[:0]
-			moved = append(moved, transitions.wildcardTargets...)
+			moved := b.transitions.moved[:0]
+			moved = append(moved, b.transitions.wildcardTargets...)
 			moved = append(moved, literalTargets...)
-			transitions.moved = moved[:0]
+			b.transitions.moved = moved[:0]
 
-			stateID, stateErr := getOrCreateState(moved)
+			stateID, stateErr := b.getOrCreateState(moved)
 			if stateErr != nil {
 				return nil, stateErr
 			}
-			md.states[currentID].trans[idx] = int32(stateID)
+			md.states[currentID].trans[idx] = stateID
 		}
 	}
 
@@ -662,6 +687,9 @@ func appendFixedUint32(buf []byte, value int) ([]byte, error) {
 	), nil
 }
 
+// checkedStateID32 and checkedAlphabetIndex8 have been removed: state IDs are
+// now stored as uint32 throughout, and runeToIndex returns byte directly.
+
 // ---- Hopcroft Minimization ----
 
 type ruleIDsFingerprint struct {
@@ -674,7 +702,7 @@ type acceptPartitionBucket struct {
 	states  []int
 }
 
-type transitionSignature [AlphabetSize]int32
+type transitionSignature [AlphabetSize]uint32
 
 var noTransSig transitionSignature
 
@@ -696,10 +724,10 @@ func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
 	partitions := initialPartitions(md)
 
 	// stateToPartition: state -> partition index
-	stateToPartition := make([]int32, n)
+	stateToPartition := make([]uint32, n)
 	updateMapping := func() {
 		for pi, p := range partitions {
-			p32 := int32(pi)
+			p32 := uint32(pi) //nolint:gosec // pi is a range index, always ≥0
 			for _, s := range p {
 				stateToPartition[s] = p32
 			}
@@ -801,7 +829,7 @@ func fingerprintRuleIDs(ids []uint32) ruleIDsFingerprint {
 }
 
 // splitPartition refines one partition group by transition signature.
-func splitPartition(md *intermediateDFA, partition []int, stateToPartition []int32) [][]int {
+func splitPartition(md *intermediateDFA, partition []int, stateToPartition []uint32) [][]int {
 	groupIndexes := make(map[transitionSignature]int, len(partition))
 	result := make([][]int, 0, 2)
 	for _, s := range partition {
@@ -819,7 +847,7 @@ func splitPartition(md *intermediateDFA, partition []int, stateToPartition []int
 }
 
 // transitionSig records which partition each outgoing edge reaches.
-func transitionSig(md *intermediateDFA, state int, stateToPartition []int32) transitionSignature {
+func transitionSig(md *intermediateDFA, state int, stateToPartition []uint32) transitionSignature {
 	sig := noTransSig
 	for idx, target := range md.states[state].trans {
 		if target != noTransitionState {
@@ -842,8 +870,8 @@ func (d *DFA) Match(input string) (matched bool, ruleIDs []uint32) {
 	}
 	s := d.start
 	for _, r := range input {
-		idx := RuneToIndex(r)
-		if idx < 0 {
+		idx := runeToIndex(r)
+		if idx == noAlphabetIndex {
 			return false, nil
 		}
 		s = s.Trans[idx]
@@ -922,7 +950,7 @@ func (d *DFA) DumpDot(w io.Writer) error {
 		targetChars := make(map[int][]rune)
 		for idx, target := range s.Trans {
 			if target != nil {
-				targetChars[stateIdx[target]] = append(targetChars[stateIdx[target]], IndexToRune(idx))
+				targetChars[stateIdx[target]] = append(targetChars[stateIdx[target]], indexToRune(idx))
 			}
 		}
 		for target, chars := range targetChars {

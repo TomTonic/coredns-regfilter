@@ -16,14 +16,14 @@ import (
 // TestRuneToIndexAllDNSChars verifies that users get stable matching for every supported DNS character in the automaton package by asserting that each allowed rune maps to a unique transition slot.
 func TestRuneToIndexAllDNSChars(t *testing.T) {
 	// Every DNS char must map to a unique index in [0, AlphabetSize).
-	seen := make(map[int]rune)
+	seen := make(map[byte]rune)
 	for _, r := range "abcdefghijklmnopqrstuvwxyz0123456789-." {
-		idx := RuneToIndex(r)
-		if idx < 0 || idx >= AlphabetSize {
-			t.Fatalf("RuneToIndex(%q) = %d, want [0,%d)", r, idx, AlphabetSize)
+		idx := runeToIndex(r)
+		if idx == noAlphabetIndex || int(idx) >= AlphabetSize {
+			t.Fatalf("runeToIndex(%q) = %d, want [0,%d)", r, idx, AlphabetSize)
 		}
 		if prev, dup := seen[idx]; dup {
-			t.Fatalf("RuneToIndex(%q) = %d collides with %q", r, idx, prev)
+			t.Fatalf("runeToIndex(%q) = %d collides with %q", r, idx, prev)
 		}
 		seen[idx] = r
 	}
@@ -32,11 +32,11 @@ func TestRuneToIndexAllDNSChars(t *testing.T) {
 	}
 }
 
-// TestRuneToIndexInvalid verifies that malformed query characters do not enter the DFA transition table in the automaton package by asserting that unsupported runes return -1.
+// TestRuneToIndexInvalid verifies that malformed query characters do not enter the DFA transition table in the automaton package by asserting that unsupported runes return noAlphabetIndex (0xFF).
 func TestRuneToIndexInvalid(t *testing.T) {
 	for _, r := range "ABCXYZ_!@#$%^&*() /\\\"'" {
-		if idx := RuneToIndex(r); idx != -1 {
-			t.Errorf("RuneToIndex(%q) = %d, want -1", r, idx)
+		if idx := runeToIndex(r); idx != noAlphabetIndex {
+			t.Errorf("runeToIndex(%q) = %d, want noAlphabetIndex", r, idx)
 		}
 	}
 }
@@ -44,10 +44,10 @@ func TestRuneToIndexInvalid(t *testing.T) {
 // TestIndexToRuneRoundTrip verifies that diagnostic code can move safely between alphabet indexes and runes in the automaton package by asserting a full round-trip across the supported alphabet.
 func TestIndexToRuneRoundTrip(t *testing.T) {
 	for i := range AlphabetSize {
-		r := IndexToRune(i)
-		got := RuneToIndex(r)
-		if got != i {
-			t.Errorf("RuneToIndex(IndexToRune(%d)) = %d, want %d (rune=%q)", i, got, i, r)
+		r := indexToRune(i)
+		got := runeToIndex(r)
+		if int(got) != i {
+			t.Errorf("runeToIndex(indexToRune(%d)) = %d, want %d (rune=%q)", i, got, i, r)
 		}
 	}
 }
@@ -55,8 +55,8 @@ func TestIndexToRuneRoundTrip(t *testing.T) {
 // TestIndexToRuneReturnsMinusOneOutOfRange verifies that callers do not crash the process when they inspect invalid alphabet indexes in the automaton package by asserting that out-of-range values return -1.
 func TestIndexToRuneReturnsMinusOneOutOfRange(t *testing.T) {
 	for _, i := range []int{-1, AlphabetSize, 100} {
-		if got := IndexToRune(i); got != -1 {
-			t.Errorf("IndexToRune(%d) = %d, want -1", i, got)
+		if got := indexToRune(i); got != -1 {
+			t.Errorf("indexToRune(%d) = %d, want -1", i, got)
 		}
 	}
 }
@@ -67,8 +67,8 @@ func TestDnsAlphabetConsistency(t *testing.T) {
 		t.Fatalf("dnsAlphabet length = %d, want %d", len(dnsAlphabet), AlphabetSize)
 	}
 	for i, r := range dnsAlphabet {
-		if RuneToIndex(r) != i {
-			t.Errorf("dnsAlphabet[%d] = %q but RuneToIndex returns %d", i, r, RuneToIndex(r))
+		if int(runeToIndex(r)) != i {
+			t.Errorf("dnsAlphabet[%d] = %q but runeToIndex returns %d", i, r, runeToIndex(r))
 		}
 	}
 }
@@ -166,7 +166,10 @@ func TestCombineNFAsAddsStartEpsilonFanOut(t *testing.T) {
 		t.Fatalf("buildPatternNFA(second): %v", err)
 	}
 
-	combined := combineNFAs([]*nfa{first, second})
+	combined, err := combineNFAs([]*nfa{first, second})
+	if err != nil {
+		t.Fatalf("combineNFAs: %v", err)
+	}
 	eps := combined.states[combined.start].epsilon
 	if len(eps) != 2 {
 		t.Fatalf("combined start epsilon fan-out = %v, want 2 entries", eps)
@@ -235,14 +238,14 @@ func TestSplitPartitionKeepsStableOrder(t *testing.T) {
 		md.states[i] = newIntermediateDFAState(false, nil)
 	}
 
-	aIndex := RuneToIndex('a')
+	aIndex := runeToIndex('a')
 	md.states[0].trans[aIndex] = 4
 	md.states[1].trans[aIndex] = 5
 	md.states[2].trans[aIndex] = 4
 	md.states[3].trans[aIndex] = 5
 
 	partition := []int{0, 1, 2, 3}
-	stateToPartition := []int32{0, 0, 0, 0, 1, 2}
+	stateToPartition := []uint32{0, 0, 0, 0, 1, 2}
 
 	got := splitPartition(md, partition, stateToPartition)
 	want := [][]int{{0, 2}, {1, 3}}
@@ -299,8 +302,8 @@ func TestDFAStateCanHaveMultipleOutgoingEdges(t *testing.T) {
 		t.Fatalf("Compile(): %v", err)
 	}
 
-	aNext := dfa.start.Trans[RuneToIndex('a')]
-	bNext := dfa.start.Trans[RuneToIndex('b')]
+	aNext := dfa.start.Trans[runeToIndex('a')]
+	bNext := dfa.start.Trans[runeToIndex('b')]
 	if aNext == nil || bNext == nil {
 		t.Fatalf("expected start state to have outgoing edges for both 'a' and 'b'")
 	}
@@ -814,14 +817,14 @@ func TestDFATransitionsAreDirectPointers(t *testing.T) {
 	}
 
 	// Verify start state has a transition for 'a' that is a direct pointer
-	aIdx := RuneToIndex('a')
+	aIdx := runeToIndex('a')
 	next := dfa.start.Trans[aIdx]
 	if next == nil {
 		t.Fatal("start state should have transition for 'a'")
 	}
 
 	// Follow the chain: a → . → wildcard (accept)
-	dotIdx := RuneToIndex('.')
+	dotIdx := runeToIndex('.')
 	afterDot := next.Trans[dotIdx]
 	if afterDot == nil {
 		t.Fatal("second state should have transition for '.'")
