@@ -73,7 +73,10 @@ func profileCompile(t *testing.T, patterns []Pattern) {
 
 	// Phase 2: Combine NFAs
 	combineStart := time.Now()
-	combined := combineNFAs(nfas)
+	combined, err := combineNFAs(nfas)
+	if err != nil {
+		t.Fatalf("combine NFAs: %v", err)
+	}
 	combineTime := time.Since(combineStart)
 
 	// Phase 3: Subset construction
