@@ -150,6 +150,7 @@ type closureScratch struct {
 	stamp  uint32
 	stack  []int
 	result []int
+	keyBuf []byte
 }
 
 // newNFA allocates an empty NFA with no states.
@@ -195,7 +196,7 @@ func (n *nfa) addAnyDNSTrans(from int, to int) {
 // buildPatternNFA constructs a Thompson NFA for a single pattern.
 // Pattern language: literal chars, '.' literal, '*' = zero-or-more DNS chars.
 func buildPatternNFA(pattern string, ruleID uint32) (*nfa, error) {
-	n := newNFA()
+	n := &nfa{states: make([]nfaState, 0, len(pattern)+2)}
 	start := n.addState()
 	n.start = start
 
@@ -226,7 +227,11 @@ func buildPatternNFA(pattern string, ruleID uint32) (*nfa, error) {
 // combineNFAs merges multiple NFAs into one with a new start state connected
 // via epsilon transitions.
 func combineNFAs(nfas []*nfa) *nfa {
-	combined := newNFA()
+	totalStates := 1
+	for _, sub := range nfas {
+		totalStates += len(sub.states)
+	}
+	combined := &nfa{states: make([]nfaState, 0, totalStates)}
 	newStart := combined.addState()
 	combined.start = newStart
 
@@ -293,9 +298,9 @@ func epsilonClosure(cs *closureScratch, n *nfa, states []int) []int {
 	}
 
 	slices.Sort(result)
-	cs.stack = stack[:0]
-	cs.result = result[:0]
-	return slices.Clone(result)
+	cs.stack = stack
+	cs.result = result
+	return result
 }
 
 // ---- Intermediate DFA (used only during construction and minimization) ----
@@ -306,7 +311,7 @@ func epsilonClosure(cs *closureScratch, n *nfa, states []int) []int {
 // RuneToIndex to reduce heap churn during subset construction and Hopcroft
 // minimization.
 type intermediateDFAState struct {
-	trans   [AlphabetSize]int
+	trans   [AlphabetSize]int32
 	accept  bool
 	ruleIDs []uint32
 }
@@ -517,15 +522,15 @@ func (md *intermediateDFA) toDFA() *DFA {
 
 // subsetConstruction converts an NFA to an intermediate DFA using the classic algorithm.
 func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediateDFA, error) {
-	md := &intermediateDFA{}
+	md := &intermediateDFA{states: make([]intermediateDFAState, 0, 1024)}
 	closures := newClosureScratch(len(n.states))
 	transitions := &subsetTransitionScratch{}
-	worklist := make([]subsetWorkItem, 0, 1)
+	worklist := make([]subsetWorkItem, 0, 256)
 
-	stateMap := make(map[string]int)
+	stateMap := make(map[string]int, 1024)
 	getOrCreateState := func(source []int) (int, error) {
 		closure := epsilonClosure(closures, n, source)
-		key, err := makeSetKey(closure)
+		key, err := makeSetKey(&closures.keyBuf, closure)
 		if err != nil {
 			return 0, err
 		}
@@ -542,22 +547,22 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 		stateMap[key] = newID
 		accept, ruleIDs := computeAccept(n, closure)
 		md.states = append(md.states, newIntermediateDFAState(accept, ruleIDs))
-		worklist = append(worklist, subsetWorkItem{id: newID, states: closure})
+		worklist = append(worklist, subsetWorkItem{id: newID, states: slices.Clone(closure)})
 		return newID, nil
 	}
 
-	startClosure := epsilonClosure(closures, n, []int{n.start})
-	startKey, err := makeSetKey(startClosure)
+	startResult := epsilonClosure(closures, n, []int{n.start})
+	startKey, err := makeSetKey(&closures.keyBuf, startResult)
 	if err != nil {
 		return nil, err
 	}
 	stateMap[startKey] = 0
 	md.start = 0
 
-	accept, ruleIDs := computeAccept(n, startClosure)
+	accept, ruleIDs := computeAccept(n, startResult)
 	md.states = append(md.states, newIntermediateDFAState(accept, ruleIDs))
 
-	worklist = append(worklist, subsetWorkItem{id: 0, states: startClosure})
+	worklist = append(worklist, subsetWorkItem{id: 0, states: slices.Clone(startResult)})
 
 	for len(worklist) > 0 {
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -570,12 +575,13 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 		currentID := currentItem.id
 		transitions.collect(n, current)
 
-		wildcardID := noTransitionState
+		wildcardID := int32(noTransitionState)
 		if len(transitions.wildcardTargets) > 0 {
-			wildcardID, err = getOrCreateState(transitions.wildcardTargets)
-			if err != nil {
-				return nil, err
+			id, wildcardErr := getOrCreateState(transitions.wildcardTargets)
+			if wildcardErr != nil {
+				return nil, wildcardErr
 			}
+			wildcardID = int32(id)
 			for idx := range AlphabetSize {
 				md.states[currentID].trans[idx] = wildcardID
 			}
@@ -592,7 +598,7 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 				if stateErr != nil {
 					return nil, stateErr
 				}
-				md.states[currentID].trans[idx] = stateID
+				md.states[currentID].trans[idx] = int32(stateID)
 				continue
 			}
 
@@ -605,7 +611,7 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 			if stateErr != nil {
 				return nil, stateErr
 			}
-			md.states[currentID].trans[idx] = stateID
+			md.states[currentID].trans[idx] = int32(stateID)
 		}
 	}
 
@@ -614,35 +620,33 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 
 // computeAccept derives the accept flag and merged rule IDs for a DFA state set.
 func computeAccept(n *nfa, stateSet []int) (accept bool, ruleIDs []uint32) {
-	seen := make(map[uint32]bool)
 	for _, s := range stateSet {
 		if n.states[s].isAccept() {
 			accept = true
-			for _, id := range n.states[s].ruleIDs {
-				if !seen[id] {
-					seen[id] = true
-					ruleIDs = append(ruleIDs, id)
-				}
-			}
+			ruleIDs = append(ruleIDs, n.states[s].ruleIDs...)
 		}
 	}
-	slices.Sort(ruleIDs)
+	if len(ruleIDs) > 1 {
+		slices.Sort(ruleIDs)
+		ruleIDs = slices.Compact(ruleIDs)
+	}
 	return accept, ruleIDs
 }
 
 // makeSetKey serializes a sorted state set into a deterministic binary key for
 // the state map. Each state ID occupies a fixed four-byte slot so concatenated
 // keys remain unambiguous without decimal formatting or variable-length codecs.
-func makeSetKey(states []int) (string, error) {
-	buf := make([]byte, 0, len(states)*4)
+func makeSetKey(buf *[]byte, states []int) (string, error) {
+	b := (*buf)[:0]
 	for _, s := range states {
 		var err error
-		buf, err = appendFixedUint32(buf, s)
+		b, err = appendFixedUint32(b, s)
 		if err != nil {
 			return "", err
 		}
 	}
-	return string(buf), nil
+	*buf = b
+	return string(b), nil
 }
 
 func appendFixedUint32(buf []byte, value int) ([]byte, error) {
@@ -670,7 +674,15 @@ type acceptPartitionBucket struct {
 	states  []int
 }
 
-type transitionSignature [AlphabetSize]int
+type transitionSignature [AlphabetSize]int32
+
+var noTransSig transitionSignature
+
+func init() {
+	for i := range noTransSig {
+		noTransSig[i] = noTransitionState
+	}
+}
 
 // hopcroftMinimize merges equivalent states to produce a minimal DFA.
 func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
@@ -684,11 +696,12 @@ func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
 	partitions := initialPartitions(md)
 
 	// stateToPartition: state -> partition index
-	stateToPartition := make([]int, n)
+	stateToPartition := make([]int32, n)
 	updateMapping := func() {
 		for pi, p := range partitions {
+			p32 := int32(pi)
 			for _, s := range p {
-				stateToPartition[s] = pi
+				stateToPartition[s] = p32
 			}
 		}
 	}
@@ -698,8 +711,12 @@ func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
 	changed := true
 	for changed {
 		changed = false
-		var newPartitions [][]int
+		newPartitions := make([][]int, 0, len(partitions)+len(partitions)/4)
 		for _, p := range partitions {
+			if len(p) <= 1 {
+				newPartitions = append(newPartitions, p)
+				continue
+			}
 			split := splitPartition(md, p, stateToPartition)
 			if len(split) > 1 {
 				changed = true
@@ -722,7 +739,7 @@ func hopcroftMinimize(md *intermediateDFA) *intermediateDFA {
 			}
 		}
 	}
-	minMD.start = stateToPartition[md.start]
+	minMD.start = int(stateToPartition[md.start])
 
 	return minMD
 }
@@ -784,13 +801,9 @@ func fingerprintRuleIDs(ids []uint32) ruleIDsFingerprint {
 }
 
 // splitPartition refines one partition group by transition signature.
-func splitPartition(md *intermediateDFA, partition, stateToPartition []int) [][]int {
-	if len(partition) <= 1 {
-		return [][]int{partition}
-	}
-
+func splitPartition(md *intermediateDFA, partition []int, stateToPartition []int32) [][]int {
 	groupIndexes := make(map[transitionSignature]int, len(partition))
-	result := make([][]int, 0, len(partition))
+	result := make([][]int, 0, 2)
 	for _, s := range partition {
 		key := transitionSig(md, s, stateToPartition)
 		groupIndex, exists := groupIndexes[key]
@@ -806,11 +819,8 @@ func splitPartition(md *intermediateDFA, partition, stateToPartition []int) [][]
 }
 
 // transitionSig records which partition each outgoing edge reaches.
-func transitionSig(md *intermediateDFA, state int, stateToPartition []int) transitionSignature {
-	sig := transitionSignature{}
-	for i := range sig {
-		sig[i] = noTransitionState
-	}
+func transitionSig(md *intermediateDFA, state int, stateToPartition []int32) transitionSignature {
+	sig := noTransSig
 	for idx, target := range md.states[state].trans {
 		if target != noTransitionState {
 			sig[idx] = stateToPartition[target]
