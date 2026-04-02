@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/bits"
 	"slices"
 	"sort"
 	"strings"
@@ -322,6 +323,40 @@ type subsetWorkItem struct {
 	states []int
 }
 
+type subsetTransitionScratch struct {
+	activeLiteralMask uint64
+	literalTargets    [AlphabetSize][]int
+	wildcardTargets   []int
+	moved             []int
+}
+
+func (s *subsetTransitionScratch) reset() {
+	mask := s.activeLiteralMask
+	for mask != 0 {
+		idx := bits.TrailingZeros64(mask)
+		s.literalTargets[idx] = s.literalTargets[idx][:0]
+		mask &^= uint64(1) << idx
+	}
+	s.activeLiteralMask = 0
+	s.wildcardTargets = s.wildcardTargets[:0]
+	s.moved = s.moved[:0]
+}
+
+func (s *subsetTransitionScratch) collect(n *nfa, states []int) {
+	s.reset()
+	for _, stateID := range states {
+		state := &n.states[stateID]
+		if state.hasLiteralTransition() {
+			idx := int(state.literalIndex)
+			s.activeLiteralMask |= uint64(1) << idx
+			s.literalTargets[idx] = append(s.literalTargets[idx], int(state.literalTo))
+		}
+		if state.hasAnyDNSTransition() {
+			s.wildcardTargets = append(s.wildcardTargets, int(state.anyDNSTo))
+		}
+	}
+}
+
 func newIntermediateDFAState(accept bool, ruleIDs []uint32) intermediateDFAState {
 	s := intermediateDFAState{
 		accept:  accept,
@@ -484,8 +519,32 @@ func (md *intermediateDFA) toDFA() *DFA {
 func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediateDFA, error) {
 	md := &intermediateDFA{}
 	closures := newClosureScratch(len(n.states))
+	transitions := &subsetTransitionScratch{}
+	worklist := make([]subsetWorkItem, 0, 1)
 
 	stateMap := make(map[string]int)
+	getOrCreateState := func(source []int) (int, error) {
+		closure := epsilonClosure(closures, n, source)
+		key, err := makeSetKey(closure)
+		if err != nil {
+			return 0, err
+		}
+
+		if existingID, exists := stateMap[key]; exists {
+			return existingID, nil
+		}
+
+		if maxStates > 0 && len(md.states) >= maxStates {
+			return 0, fmt.Errorf("automaton: exceeded MaxStates limit (%d)", maxStates)
+		}
+
+		newID := len(md.states)
+		stateMap[key] = newID
+		accept, ruleIDs := computeAccept(n, closure)
+		md.states = append(md.states, newIntermediateDFAState(accept, ruleIDs))
+		worklist = append(worklist, subsetWorkItem{id: newID, states: closure})
+		return newID, nil
+	}
 
 	startClosure := epsilonClosure(closures, n, []int{n.start})
 	startKey, err := makeSetKey(startClosure)
@@ -498,8 +557,7 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 	accept, ruleIDs := computeAccept(n, startClosure)
 	md.states = append(md.states, newIntermediateDFAState(accept, ruleIDs))
 
-	worklist := []subsetWorkItem{{id: 0, states: startClosure}}
-	movedScratch := make([]int, 0)
+	worklist = append(worklist, subsetWorkItem{id: 0, states: startClosure})
 
 	for len(worklist) > 0 {
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -510,40 +568,44 @@ func subsetConstruction(n *nfa, maxStates int, deadline time.Time) (*intermediat
 		worklist = worklist[1:]
 		current := currentItem.states
 		currentID := currentItem.id
+		transitions.collect(n, current)
 
-		for idx := range AlphabetSize {
-			moved := movedScratch[:0]
-			for _, s := range current {
-				state := &n.states[s]
-				if state.hasLiteralTransition() && int(state.literalIndex) == idx {
-					moved = append(moved, int(state.literalTo))
-				}
-				if state.hasAnyDNSTransition() {
-					moved = append(moved, int(state.anyDNSTo))
-				}
-			}
-			movedScratch = moved[:0]
-			if len(moved) == 0 {
-				continue
-			}
-			closure := epsilonClosure(closures, n, moved)
-			key, err := makeSetKey(closure)
+		wildcardID := noTransitionState
+		if len(transitions.wildcardTargets) > 0 {
+			wildcardID, err = getOrCreateState(transitions.wildcardTargets)
 			if err != nil {
 				return nil, err
 			}
+			for idx := range AlphabetSize {
+				md.states[currentID].trans[idx] = wildcardID
+			}
+		}
 
-			if _, exists := stateMap[key]; !exists {
-				if maxStates > 0 && len(md.states) >= maxStates {
-					return nil, fmt.Errorf("automaton: exceeded MaxStates limit (%d)", maxStates)
+		mask := transitions.activeLiteralMask
+		for mask != 0 {
+			idx := bits.TrailingZeros64(mask)
+			mask &^= uint64(1) << idx
+
+			literalTargets := transitions.literalTargets[idx]
+			if len(transitions.wildcardTargets) == 0 {
+				stateID, stateErr := getOrCreateState(literalTargets)
+				if stateErr != nil {
+					return nil, stateErr
 				}
-				newID := len(md.states)
-				stateMap[key] = newID
-				a, rids := computeAccept(n, closure)
-				md.states = append(md.states, newIntermediateDFAState(a, rids))
-				worklist = append(worklist, subsetWorkItem{id: newID, states: closure})
+				md.states[currentID].trans[idx] = stateID
+				continue
 			}
 
-			md.states[currentID].trans[idx] = stateMap[key]
+			moved := transitions.moved[:0]
+			moved = append(moved, transitions.wildcardTargets...)
+			moved = append(moved, literalTargets...)
+			transitions.moved = moved[:0]
+
+			stateID, stateErr := getOrCreateState(moved)
+			if stateErr != nil {
+				return nil, stateErr
+			}
+			md.states[currentID].trans[idx] = stateID
 		}
 	}
 
