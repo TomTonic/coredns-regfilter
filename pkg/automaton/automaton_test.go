@@ -184,11 +184,12 @@ func TestCombineNFAsAddsStartEpsilonFanOut(t *testing.T) {
 func TestMakeSetKeyUsesFixedWidthEncoding(t *testing.T) {
 	left := []int{0xfe, 0x0d}
 	right := []int{0x0f, 0xed}
-	leftKey, err := makeSetKey(left)
+	var buf []byte
+	leftKey, err := makeSetKey(&buf, left)
 	if err != nil {
 		t.Fatalf("makeSetKey(%v) error = %v", left, err)
 	}
-	rightKey, err := makeSetKey(right)
+	rightKey, err := makeSetKey(&buf, right)
 	if err != nil {
 		t.Fatalf("makeSetKey(%v) error = %v", right, err)
 	}
@@ -214,7 +215,8 @@ func TestMakeSetKeyUsesFixedWidthEncoding(t *testing.T) {
 //
 // It asserts that negative state IDs are rejected with an error.
 func TestMakeSetKeyRejectsOutOfRangeStates(t *testing.T) {
-	if _, err := makeSetKey([]int{-1}); err == nil {
+	var buf []byte
+	if _, err := makeSetKey(&buf, []int{-1}); err == nil {
 		t.Fatal("makeSetKey should reject negative state ids")
 	}
 }
@@ -240,7 +242,7 @@ func TestSplitPartitionKeepsStableOrder(t *testing.T) {
 	md.states[3].trans[aIndex] = 5
 
 	partition := []int{0, 1, 2, 3}
-	stateToPartition := []int{0, 0, 0, 0, 1, 2}
+	stateToPartition := []int32{0, 0, 0, 0, 1, 2}
 
 	got := splitPartition(md, partition, stateToPartition)
 	want := [][]int{{0, 2}, {1, 3}}
