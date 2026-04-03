@@ -155,15 +155,6 @@ func (m *Matcher) LiteralCount() int {
 	return m.literals.Len()
 }
 
-// DumpDot writes the wildcard DFA as a Graphviz DOT graph to w.
-// Returns an error if no DFA was compiled.
-func (m *Matcher) DumpDot(w interface{ Write([]byte) (int, error) }) error {
-	if m == nil || m.dfa == nil {
-		return fmt.Errorf("matcher: no wildcard DFA to dump")
-	}
-	return m.dfa.DumpDot(w)
-}
-
 func nopLogf(string, ...interface{}) {}
 
 // automatonLogAdapter adapts a matcher.Logger to automaton.Logger.
