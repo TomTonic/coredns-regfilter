@@ -22,8 +22,8 @@ const (
 // on the common pure-ASCII path.
 //
 // While scanning, the function also detects whether any label begins with the
-// ACE prefix "xn--". Only then does it perform an IDNA Lookup.ToASCII round
-// trip to validate the punycode encoding. Names without an ACE-prefixed label
+// ACE prefix "xn--". Only then does it perform an IDNA Lookup.ToUnicode conversion
+// to validate the punycode encoding. Names without an ACE-prefixed label
 // return directly after the ASCII scan succeeds.
 //
 // Returns true only when qname is valid. Empty labels, labels that start or end
@@ -53,16 +53,11 @@ func isStrictDNSQueryName(qname string) bool {
 		return true
 	}
 
-	ascii, err := idna.Lookup.ToASCII(qname[:end])
+	_, err := idna.Lookup.ToUnicode(qname[:end])
 	if err != nil {
 		return false
 	}
-	if ascii == "" || len(ascii) > maxStrictDNSNameLength {
-		return false
-	}
-
-	_, ok = validateStrictDNSASCIIName(ascii, len(ascii))
-	return ok
+	return true
 }
 
 // validateStrictDNSASCIIName validates RFC 1035 LDH syntax and length limits
