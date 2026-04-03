@@ -18,6 +18,7 @@ coverage.*
 !/.github/workflows/coverage.yml
 *.coverprofile
 profile.cov
+*.prof
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
