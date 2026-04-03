@@ -13,15 +13,16 @@ That makes whitelist precedence explicit and keeps per-query matching on the hot
 
 ## Features
 
-- **Filter list support**: Parses AdGuard, EasyList, and hosts-style filter lists
-- **Hybrid matching**: O(k) suffix map for literal domains, O(n) DFA for wildcards
+`filterlist` enforces high-performance DNS policy and security controls—blocking unwanted or malicious domains, protecting internal services, and ensuring naming compliance. Designed for predictable per-query overhead and hot-reloadable rules for safe live updates.
+
+- **Filter list support**: Parses AdGuard, EasyList, ABP, and hosts-style filter lists
+- **Hybrid matching**: O(k) map structure for literal domains (without wildcards), O(n) DFA for domains with wildcards
 - **Hot reload**: Watches filter list directories and recompiles matchers on changes
-- **Whitelist precedence**: Whitelisted domains are always allowed, even if blacklisted
+- **Allowlist precedence**: Domains in the allowlist are always allowed, even if blacklisted
 - **Multiple block actions**: NXDOMAIN, REFUSE, or null IP responses
-- **RFC / IDNA name validation**: Optionally blocks queries whose names violate RFC 1035 LDH syntax or the IDNA Lookup profile (default: on)
+- **RFC / IDNA name validation**: Blocks queries whose names violate RFC rules (can be disabled)
 - **Deny-non-allowlisted mode**: Optionally blocks every query not present in the allowlist (default: off)
 - **Observability**: Prometheus metrics and structured logging
-- **CLI tool**: Offline list validation and compile checks
 
 ## How It Works
 
