@@ -44,16 +44,30 @@ type ActionConfig struct {
 // compilation cost. InvertAllowlist controls which rules from the allowlist
 // directory are compiled: by default (false) only @@-prefixed exception rules
 // are used; when true, non-@@ rules (||domain^) are used instead.
+//
+// DenyNonAllowlisted, when true, blocks every query that was not accepted by
+// the allowlist in the denylist phase — effectively a deny-all-except-listed
+// policy. It runs before the denylist matcher but after allowlist evaluation.
+// Default is false.
+//
+// DisableRFCChecks, when true, skips the RFC 1035 + IDNA query-name
+// validation step that normally runs after DenyNonAllowlisted in the denylist
+// phase. When false (the default), queries whose names violate RFC 1035 LDH
+// syntax or the IDNA Lookup profile are blocked before the denylist matcher is
+// consulted.
+//
 // Setup callers typically obtain Config via parseConfig.
 type Config struct {
-	AllowlistDir    string
-	DenylistDir     string
-	Action          ActionConfig
-	Debounce        time.Duration
-	MaxStates       int
-	CompileTimeout  time.Duration
-	Debug           bool
-	InvertAllowlist bool
+	AllowlistDir       string
+	DenylistDir        string
+	Action             ActionConfig
+	Debounce           time.Duration
+	MaxStates          int
+	CompileTimeout     time.Duration
+	Debug              bool
+	InvertAllowlist    bool
+	DenyNonAllowlisted bool
+	DisableRFCChecks   bool
 }
 
 // Plugin is the CoreDNS plugin handler.
@@ -169,6 +183,41 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			}
 			return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
 		}
+	}
+
+	// Denylist prechecks: run after allowlist, before the denylist matcher.
+	//
+	// 1. deny_non_allowlisted — when enabled, every query that missed the
+	//    allowlist is blocked immediately without consulting the denylist.
+	// 2. RFC / IDNA check — when enabled (disable_RFC_checks is false), queries
+	//    whose names violate RFC 1035 LDH syntax or the IDNA Lookup profile are
+	//    blocked. This check runs after deny_non_allowlisted so that an enabled
+	//    deny_non_allowlisted can short-circuit the (slightly more expensive)
+	//    RFC validation for names that would be blocked anyway.
+	if rf.Config.DenyNonAllowlisted {
+		if rf.metrics != nil {
+			rf.metrics.DenylistChecks.Inc()
+			rf.metrics.DenylistHits.Inc()
+			elapsed := time.Since(start).Seconds()
+			rf.metrics.MatchDuration.WithLabelValues("reject").Observe(elapsed)
+		}
+		if rf.Config.Debug {
+			log.Infof("denylist precheck blocked name=%s reason=deny_non_allowlisted", name)
+		}
+		return rf.respondBlocked(w, r, qname, qtype)
+	}
+
+	if !rf.Config.DisableRFCChecks && !isStrictDNSQueryName(qname) {
+		if rf.metrics != nil {
+			rf.metrics.DenylistChecks.Inc()
+			rf.metrics.DenylistHits.Inc()
+			elapsed := time.Since(start).Seconds()
+			rf.metrics.MatchDuration.WithLabelValues("reject").Observe(elapsed)
+		}
+		if rf.Config.Debug {
+			log.Infof("denylist precheck blocked name=%s reason=RFC_name_violation", name)
+		}
+		return rf.respondBlocked(w, r, qname, qtype)
 	}
 
 	// Check denylist

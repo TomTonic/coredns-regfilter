@@ -304,3 +304,133 @@ func TestPluginOrderWarning(t *testing.T) {
 		})
 	}
 }
+
+// TestParseConfigDenylistPrecheckDefaults verifies that operators get safe
+// default values for the two denylist-precheck config switches when neither
+// directive is present in the Corefile block.
+//
+// This test covers the plugin Corefile parsing defaults for the
+// deny_non_allowlisted and disable_RFC_checks directives.
+//
+// It asserts that DenyNonAllowlisted defaults to false and DisableRFCChecks
+// defaults to false (meaning RFC checks are active) when neither directive
+// appears in the Corefile.
+func TestParseConfigDenylistPrecheckDefaults(t *testing.T) {
+	c := caddy.NewTestController("dns", `filterlist { denylist_dir /tmp/bl }`)
+	cfg, err := parseConfig(c)
+	if err != nil {
+		t.Fatalf("parseConfig error: %v", err)
+	}
+	if cfg.DenyNonAllowlisted {
+		t.Error("expected DenyNonAllowlisted=false by default")
+	}
+	if cfg.DisableRFCChecks {
+		t.Error("expected DisableRFCChecks=false by default (RFC checks active)")
+	}
+}
+
+// TestParseConfigDenylistPrecheckDirectives verifies that operators can
+// explicitly configure both denylist-precheck switches using the full set of
+// accepted boolean representations.
+//
+// This test covers the plugin Corefile parsing for the deny_non_allowlisted and
+// disable_RFC_checks directives.
+//
+// It asserts that "on" enables DenyNonAllowlisted and "true" enables
+// DisableRFCChecks, and that "off" and "false" restore them to their default
+// values.
+func TestParseConfigDenylistPrecheckDirectives(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		wantDenyNA     bool
+		wantDisableRFC bool
+	}{
+		{
+			name: "on and true",
+			input: `filterlist {
+				denylist_dir /tmp/bl
+				deny_non_allowlisted on
+				disable_RFC_checks true
+			}`,
+			wantDenyNA:     true,
+			wantDisableRFC: true,
+		},
+		{
+			name: "off and false",
+			input: `filterlist {
+				denylist_dir /tmp/bl
+				deny_non_allowlisted off
+				disable_RFC_checks false
+			}`,
+			wantDenyNA:     false,
+			wantDisableRFC: false,
+		},
+		{
+			name: "yes and 0",
+			input: `filterlist {
+				denylist_dir /tmp/bl
+				deny_non_allowlisted yes
+				disable_RFC_checks 0
+			}`,
+			wantDenyNA:     true,
+			wantDisableRFC: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", tt.input)
+			cfg, err := parseConfig(c)
+			if err != nil {
+				t.Fatalf("parseConfig error: %v", err)
+			}
+			if cfg.DenyNonAllowlisted != tt.wantDenyNA {
+				t.Errorf("DenyNonAllowlisted = %v, want %v", cfg.DenyNonAllowlisted, tt.wantDenyNA)
+			}
+			if cfg.DisableRFCChecks != tt.wantDisableRFC {
+				t.Errorf("DisableRFCChecks = %v, want %v", cfg.DisableRFCChecks, tt.wantDisableRFC)
+			}
+		})
+	}
+}
+
+// TestParseConfigRejectsInvalidDenylistPrecheckBooleans verifies that
+// operators get a descriptive error when an unsupported boolean value is
+// supplied to a denylist-precheck directive.
+//
+// This test covers the parseBool validation path in the plugin setup parser.
+//
+// It asserts that values like "maybe" and "enabled" cause parseConfig to return
+// a non-nil error for both deny_non_allowlisted and disable_RFC_checks.
+func TestParseConfigRejectsInvalidDenylistPrecheckBooleans(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name: "invalid value for deny_non_allowlisted",
+			input: `filterlist {
+				denylist_dir /tmp/bl
+				deny_non_allowlisted maybe
+			}`,
+		},
+		{
+			name: "invalid value for disable_RFC_checks",
+			input: `filterlist {
+				denylist_dir /tmp/bl
+				disable_RFC_checks enabled
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", tt.input)
+			_, err := parseConfig(c)
+			if err == nil {
+				t.Fatal("expected parseConfig error for invalid boolean value")
+			}
+		})
+	}
+}

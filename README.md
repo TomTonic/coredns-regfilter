@@ -18,6 +18,8 @@ That makes whitelist precedence explicit and keeps per-query matching on the hot
 - **Hot reload**: Watches filter list directories and recompiles matchers on changes
 - **Whitelist precedence**: Whitelisted domains are always allowed, even if blacklisted
 - **Multiple block actions**: NXDOMAIN, REFUSE, or null IP responses
+- **RFC / IDNA name validation**: Optionally blocks queries whose names violate RFC 1035 LDH syntax or the IDNA Lookup profile (default: on)
+- **Deny-non-allowlisted mode**: Optionally blocks every query not present in the allowlist (default: off)
 - **Observability**: Prometheus metrics and structured logging
 - **CLI tool**: Offline list validation and compile checks
 
@@ -180,6 +182,8 @@ Those tests assert that:
 | `ttl` | `3600` | TTL for blocked responses (nullip) |
 | `debug` | `false` | Log per-query match details (list, name, rule source, pattern) |
 | `invert_allowlist` | `false` | Use `\|\|domain^` instead of `@@\|\|domain^` for allowlist entries |
+| `deny_non_allowlisted` | `false` | Block every query that is not matched by the allowlist (deny-by-default mode) |
+| `disable_RFC_checks` | `false` | Disable the RFC 1035 / IDNA query-name validation precheck (default: checks are active) |
 
 ### Configuration Notes
 
@@ -200,13 +204,17 @@ Those tests assert that:
 - `max_states 0` disables DFA state capping for wildcard compilation. The plugin logs a warning at startup when uncapped mode is configured.
 - List parser safety limits are enforced per file: maximum physical line length is `8192` bytes and maximum line count is `200000`. Files exceeding those limits are rejected and logged.
 - `debug` enables per-query log lines showing the matching list (allowlist or denylist), the queried name, the source file and line number, and the original rule pattern. Useful for verifying that rules behave as expected. The output appears at the `[INFO]` level in the CoreDNS log.
+- `deny_non_allowlisted on` enables deny-by-default mode: every query that is not explicitly matched by the allowlist is blocked in the denylist phase, before the denylist matcher is consulted. Requires at least one configured allowlist to be useful. Default is `off`.
+- `disable_RFC_checks` controls the RFC 1035 + IDNA Lookup-profile query-name precheck. When `off` (the default), queries whose names violate LDH syntax, label-length limits, or IDNA encoding are blocked immediately after the `deny_non_allowlisted` check and before the denylist matcher. The implementation uses a tight scan with per-label and total-length counters on the ASCII fast path and only calls IDNA conversion when it sees an ACE-prefix label (`xn--`). Set it to `on` to skip this check for environments that host non-standard names (for example, names with underscores used by some services).
 
 ## Query Flow
 
 1. Normalize query name (lowercase, remove trailing dot)
 2. Check allowlist matcher → if match, **allow** (forward to next plugin)
-3. Check denylist matcher → if match, **block** according to action
-4. No match → forward to next plugin
+3. `deny_non_allowlisted` — if enabled, **block** every allowlist miss
+4. RFC / IDNA precheck — if not disabled, **block** names that violate RFC 1035 or the IDNA Lookup profile
+5. Check denylist matcher → if match, **block** according to action
+6. No match → forward to next plugin
 
 ## Metrics
 

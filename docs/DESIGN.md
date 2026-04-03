@@ -83,6 +83,10 @@ filterlist ServeDNS
        |
        +--> whitelist snapshot -> match? yes -> next plugin
        |
+       +--> deny_non_allowlisted (if enabled) -> block
+       |
+       +--> RFC / IDNA precheck (if disable_RFC_checks=false) -> block
+       |
        +--> blacklist snapshot -> match? yes -> blocked response
        |
        +--> no match -> next plugin
@@ -145,6 +149,17 @@ interoperable with DNS servers and clients. Relevant references include:
 Parser and normalization behavior (including Punycode/IDNA conversion) should
 conform to these standards; any deliberate deviation must be documented and
 justified.
+
+When `disable_RFC_checks` is `off` (the default), the denylist phase applies
+an RFC 1035 + IDNA Lookup-profile query-name precheck. The precheck uses a
+single ASCII scan with nested label loops and two counters (current label
+length and total name length) to enforce the 63/253 byte limits and LDH label
+rules. It only performs an IDNA round-trip when the scan observes an ACE label
+prefix (`xn--`). The check runs after the `deny_non_allowlisted` check and
+before denylist matcher lookups.
+
+When `deny_non_allowlisted` is `on`, the denylist phase blocks every allowlist
+miss before the RFC precheck and the denylist matcher are consulted.
 
 ## Rule Ingestion and Selection
 
@@ -249,9 +264,11 @@ The request path is intentionally short:
 1. normalize the queried name to lowercase without the trailing root dot;
 2. match against the active whitelist matcher (suffix map first, then DFA);
 3. if matched, allow the query to continue to the next plugin;
-4. otherwise match against the active blacklist matcher;
-5. if matched, synthesize the configured blocked response;
-6. otherwise forward unchanged to the next plugin.
+4. if `strict_name_validation` is enabled, reject names failing RFC/IDNA checks;
+5. if `deny_non_allowlisted` is enabled, reject every non-allowlisted name;
+6. otherwise match against the active blacklist matcher;
+7. if matched, synthesize the configured blocked response;
+8. otherwise forward unchanged to the next plugin.
 
 The plugin stores the currently active matcher snapshots in atomic state, so
 the hot path performs no lock acquisition.

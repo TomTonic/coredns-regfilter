@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coredns/caddy"
@@ -190,6 +191,18 @@ func parseDirective(c *caddy.Controller, cfg *Config) error {
 		cfg.Debug = true
 	case "invert_allowlist":
 		cfg.InvertAllowlist = true
+	case "deny_non_allowlisted":
+		enabled, err := parseBool(c, "deny_non_allowlisted")
+		if err != nil {
+			return err
+		}
+		cfg.DenyNonAllowlisted = enabled
+	case "disable_RFC_checks":
+		enabled, err := parseBool(c, "disable_RFC_checks")
+		if err != nil {
+			return err
+		}
+		cfg.DisableRFCChecks = enabled
 	default:
 		return fmt.Errorf("unknown directive %q", c.Val())
 	}
@@ -286,4 +299,32 @@ func parseUint32(c *caddy.Controller, directive string) (uint32, error) {
 	}
 
 	return uint32(parsed), nil
+}
+
+// parseBool parses a boolean directive argument that accepts the common
+// text representations used in Corefile syntax.
+//
+// The c parameter must be positioned on the directive name; the function
+// consumes the next token as the value. The directive parameter names the
+// directive in error messages.
+//
+// Accepted truthy values: "1", "true", "on", "yes".
+// Accepted falsy values:  "0", "false", "off", "no".
+// Any other value causes a descriptive error that includes the directive name.
+//
+// parseBool is used for boolean config switches like deny_non_allowlisted and
+// disable_RFC_checks that need explicit on/off syntax instead of bare keywords.
+func parseBool(c *caddy.Controller, directive string) (bool, error) {
+	value, err := nextArgValue(c)
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "on", "yes":
+		return true, nil
+	case "0", "false", "off", "no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid %s %q: expected one of: 1, true, on, yes, 0, false, off, no", directive, value)
+	}
 }

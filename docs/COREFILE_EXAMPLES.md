@@ -164,3 +164,60 @@ By default, allowlist files use the `@@` exception prefix from AdGuard syntax (`
 With `invert_allowlist`, allowlist files contain plain blocking-style rules like `||safe.example.com^` and those are compiled into the allowlist DFA. Without it, only `@@`-prefixed rules are used as allowlist entries.
 
 Denylist directories are unaffected by this flag — they always exclude `@@` exception rules so that downloaded AdGuard and EasyList files work without conversion.
+
+## RFC / IDNA Name Validation (default: on)
+
+By default the plugin blocks queries whose names violate RFC 1035 LDH syntax or
+the IDNA Lookup profile (RFCs 5890–5894). This precheck runs inside the
+denylist phase, after `deny_non_allowlisted` and before the denylist matcher.
+
+For environments that intentionally serve non-standard names (for example,
+SRV-style names with underscores or legacy hosts with digits at label
+boundaries), the check can be disabled:
+
+```txt
+. {
+    filterlist {
+        allowlist_dir /etc/coredns/allowlist.d
+        denylist_dir /etc/coredns/denylist.d
+        action nxdomain
+        disable_RFC_checks on
+    }
+    forward . 8.8.8.8
+}
+```
+
+Leave `disable_RFC_checks` unset (or set it to `off`) to keep the check active.
+
+## Deny by Default — Block Non-Allowlisted Names
+
+Enable `deny_non_allowlisted on` to block every query that is not explicitly
+matched by the allowlist. This gives a deny-by-default posture: only domains
+that appear in the allowlist files will resolve; everything else is blocked
+before the denylist matcher is consulted.
+
+```txt
+. {
+    filterlist {
+        allowlist_dir /etc/coredns/trusted.d
+        action nxdomain
+        deny_non_allowlisted on
+    }
+    forward . 8.8.8.8
+}
+```
+
+Combined with RFC name validation (both on by default), the full hardened
+configuration looks like this:
+
+```txt
+. {
+    filterlist {
+        allowlist_dir /etc/coredns/trusted.d
+        action nxdomain
+        deny_non_allowlisted on
+        # disable_RFC_checks defaults to off, so RFC checks are active
+    }
+    forward . 8.8.8.8
+}
+```
