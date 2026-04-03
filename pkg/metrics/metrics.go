@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"errors"
+	"log"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -137,7 +138,10 @@ func registerCounter(reg prometheus.Registerer, collector prometheus.Counter) pr
 			if existing, ok := alreadyRegistered.ExistingCollector.(prometheus.Counter); ok {
 				return existing
 			}
+			log.Printf("filterlist metrics: collector type mismatch for counter reuse: %v", err)
+			return collector
 		}
+		log.Printf("filterlist metrics: failed to register counter: %v", err)
 	}
 
 	return collector
@@ -151,7 +155,10 @@ func registerGauge(reg prometheus.Registerer, collector prometheus.Gauge) promet
 			if existing, ok := alreadyRegistered.ExistingCollector.(prometheus.Gauge); ok {
 				return existing
 			}
+			log.Printf("filterlist metrics: collector type mismatch for gauge reuse: %v", err)
+			return collector
 		}
+		log.Printf("filterlist metrics: failed to register gauge: %v", err)
 	}
 
 	return collector
@@ -165,7 +172,10 @@ func registerHistogram(reg prometheus.Registerer, collector prometheus.Histogram
 			if existing, ok := alreadyRegistered.ExistingCollector.(prometheus.Histogram); ok {
 				return existing
 			}
+			log.Printf("filterlist metrics: collector type mismatch for histogram reuse: %v", err)
+			return collector
 		}
+		log.Printf("filterlist metrics: failed to register histogram: %v", err)
 	}
 
 	return collector
@@ -179,7 +189,10 @@ func registerSummaryVec(reg prometheus.Registerer, collector *prometheus.Summary
 			if existing, ok := alreadyRegistered.ExistingCollector.(*prometheus.SummaryVec); ok {
 				return existing
 			}
+			log.Printf("filterlist metrics: collector type mismatch for summary vector reuse: %v", err)
+			return collector
 		}
+		log.Printf("filterlist metrics: failed to register summary vector: %v", err)
 	}
 
 	return collector
