@@ -444,40 +444,6 @@ func computeAccept(n *nfa, stateSet []uint32) (accept bool, ruleIDs []uint32) {
 	return accept, ruleIDs
 }
 
-// makeSetKeyBytes serializes a sorted NFA state set into a deterministic
-// binary key. Each state ID occupies a fixed four-byte little-endian slot so
-// concatenated keys are unambiguous. The buf parameter is a reusable scratch
-// buffer to reduce allocations.
-//
-// Callers that need a string key for map storage should wrap the result with
-// string(b). For map reads, Go optimises m[string(b)] to avoid heap
-// allocation.
-func makeSetKeyBytes(buf *[]byte, states []uint32) []byte {
-	b := (*buf)[:0]
-	for _, s := range states {
-		b = append(b,
-			byte(s&0xff),
-			byte(s>>8&0xff),
-			byte(s>>16&0xff),
-			byte(s>>24&0xff),
-		)
-	}
-	*buf = b
-	return b
-}
-
-// makeSetKey serializes a sorted NFA state set into a deterministic binary
-// key for the state-map lookup during subset construction.
-//
-// Each state ID occupies a fixed four-byte little-endian slot, so
-// concatenated keys are unambiguous without delimiter characters or
-// variable-length encoding. The buf parameter is a reusable scratch buffer
-// to reduce allocations.
-func makeSetKey(buf *[]byte, states []uint32) string {
-	b := makeSetKeyBytes(buf, states)
-	return string(b)
-}
-
 // sortedUnion merges two sorted, duplicate-free uint32 slices into one sorted,
 // duplicate-free result. It uses buf as scratch space to avoid per-call
 // allocation.
