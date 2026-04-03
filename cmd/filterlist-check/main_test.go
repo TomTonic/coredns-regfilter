@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/TomTonic/filterlist/pkg/listparser"
 )
 
 func writeFilterFile(t *testing.T, dir, name, content string) {
@@ -18,7 +16,12 @@ func writeFilterFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// TestRunWithoutArgsShowsUsage verifies that operators get actionable CLI help when they invoke the checker without arguments by asserting that run returns a failure code and prints usage text.
+// TestRunWithoutArgsShowsUsage verifies that operators get actionable CLI help
+// when they invoke the checker without arguments.
+//
+// This test covers the top-level command dispatch in filterlist-check.
+//
+// It asserts that run returns a failure code and prints usage text.
 func TestRunWithoutArgsShowsUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -31,7 +34,12 @@ func TestRunWithoutArgsShowsUsage(t *testing.T) {
 	}
 }
 
-// TestRunHelpReturnsZero verifies that operators can request command help without triggering an error path in the CLI package by asserting that the help command returns zero and prints usage text.
+// TestRunHelpReturnsZero verifies that operators can request command help
+// without triggering an error path.
+//
+// This test covers the top-level help handling in filterlist-check.
+//
+// It asserts that the help command returns zero and prints command usage.
 func TestRunHelpReturnsZero(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -39,12 +47,18 @@ func TestRunHelpReturnsZero(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run(help) code = %d, want 0", code)
 	}
-	if !strings.Contains(stderr.String(), "dump-dot") {
+	if !strings.Contains(stderr.String(), "validate") {
 		t.Fatalf("stderr = %q, want command list", stderr.String())
 	}
 }
 
-// TestRunRejectsUnknownCommand verifies that operators get immediate feedback for unsupported CLI invocations by asserting that unknown commands return a failure code and mention the invalid command.
+// TestRunRejectsUnknownCommand verifies that operators get immediate feedback
+// for unsupported CLI invocations.
+//
+// This test covers unknown-command handling in filterlist-check.
+//
+// It asserts that unknown commands return a failure code and include the
+// invalid command in stderr output.
 func TestRunRejectsUnknownCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -57,262 +71,83 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 	}
 }
 
-// TestRunValidateCompilesRules verifies that operators can validate filter directories from the CLI package by asserting that run reports parsed rules, emits parser warnings, and returns success for compilable input.
+// TestRunValidateCompilesRules verifies that operators can validate list
+// directories from the CLI.
+//
+// This test covers the validate command path in filterlist-check.
+//
+// It asserts that parsing and compilation both succeed for a valid list file.
 func TestRunValidateCompilesRules(t *testing.T) {
-	blDir := t.TempDir()
-	writeFilterFile(t, blDir, "rules.txt", "||ads.example.com^\nexample.com##.ad-banner\n")
+	listDir := t.TempDir()
+	writeFilterFile(t, listDir, "rules.txt", "||ads.example.com^\n")
 
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"validate", "--denylist", blDir}, &stdout, &stderr)
+	code := run([]string{"validate", "--list", listDir}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("run(validate) code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout.String(), "[denylist] compiled:") {
+	if !strings.Contains(stdout.String(), "compiled:") {
 		t.Fatalf("stdout = %q, want compile summary", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "WARN:") {
-		t.Fatalf("stderr = %q, want parser warning", stderr.String())
+	if strings.Contains(stderr.String(), "ERROR:") {
+		t.Fatalf("stderr = %q, want no errors", stderr.String())
 	}
 }
 
-// TestRunMatchReportsPolicyDecision verifies that users can inspect allow, deny, and pass decisions from the CLI package by asserting that run returns the documented exit codes and result strings for each case.
-func TestRunMatchReportsPolicyDecision(t *testing.T) {
-	wlDir := t.TempDir()
-	blDir := t.TempDir()
-	writeFilterFile(t, wlDir, "allow.txt", "@@||safe.example.com^\n")
-	writeFilterFile(t, blDir, "deny.txt", "||ads.example.com^\n")
-
-	//nolint:gosec // test data uses example domains, not credentials
-	tests := []struct {
-		name      string
-		args      []string
-		wantCode  int
-		wantToken string
-	}{
-		{
-			name:      "whitelisted",
-			args:      []string{"match", "--allowlist", wlDir, "--denylist", blDir, "--name", "safe.example.com"},
-			wantCode:  0,
-			wantToken: "ALLOWLISTED rule=allow.txt:1 (safe.example.com)",
-		},
-		{
-			name:      "denylisted",
-			args:      []string{"match", "--allowlist", wlDir, "--denylist", blDir, "--name", "ads.example.com"},
-			wantCode:  1,
-			wantToken: "DENYLISTED rule=deny.txt:1 (ads.example.com)",
-		},
-		{
-			name:      "allowed",
-			args:      []string{"match", "--allowlist", wlDir, "--denylist", blDir, "--name", "clean.example.com"},
-			wantCode:  0,
-			wantToken: "ALLOWED",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			code := run(tt.args, &stdout, &stderr)
-			if code != tt.wantCode {
-				t.Fatalf("run(match) code = %d, want %d", code, tt.wantCode)
-			}
-			if !strings.Contains(stdout.String(), tt.wantToken) {
-				t.Fatalf("stdout = %q, want token %q", stdout.String(), tt.wantToken)
-			}
-			if strings.Contains(stderr.String(), "WARN:") || strings.Contains(stderr.String(), "ERROR:") {
-				t.Fatalf("stderr = %q, want no warnings or errors", stderr.String())
-			}
-		})
-	}
-}
-
-// TestRunDumpDotWritesOutput verifies that operators can export compiled automatons from the CLI package by asserting that run writes a DOT file containing the expected graph header.
-func TestRunDumpDotWritesOutput(t *testing.T) {
-	blDir := t.TempDir()
-	outDir := t.TempDir()
-	writeFilterFile(t, blDir, "deny.txt", "||*.ads.example.com^\n")
-	outPath := filepath.Join(outDir, "denylist.dot")
-
+// TestRunValidateRequiresAtLeastOneList verifies that operators cannot run the
+// validator without list input.
+//
+// This test covers input validation for the validate command flags.
+//
+// It asserts that the command returns a failure code and a clear error message
+// when --list is missing.
+func TestRunValidateRequiresAtLeastOneList(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"dump-dot", "--denylist", blDir, "--out", filepath.Join(outDir, "unused.dot") + "," + outPath}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("run(dump-dot) code = %d, want 0", code)
-	}
-	content, err := os.ReadFile(filepath.Clean(outPath))
-	if err != nil {
-		t.Fatalf("ReadFile(%s) error: %v", outPath, err)
-	}
-	if !strings.Contains(string(content), "digraph DFA") {
-		t.Fatalf("DOT output = %q, want graph header", string(content))
-	}
-	if !strings.Contains(stdout.String(), "DOT written") {
-		t.Fatalf("stdout = %q, want success output", stdout.String())
-	}
-	if strings.Contains(stderr.String(), "WARN:") || strings.Contains(stderr.String(), "ERROR:") {
-		t.Fatalf("stderr = %q, want no warnings or errors", stderr.String())
-	}
-}
-
-// TestNormalizeDomain verifies that operators get stable lowercase DNS names
-// when domain input passes through the CLI normalization path.
-//
-// This test covers the filterlist-check CLI's domain normalization helper.
-//
-// It asserts that trailing dots are removed and casing is normalized without
-// altering already canonical names.
-func TestNormalizeDomain(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"Example.COM.", "example.com"},
-		{"example.com", "example.com"},
-		{"SUB.Example.Org.", "sub.example.org"},
-		{"", ""},
-		{".", ""},
-		{"A", "a"},
-	}
-	for _, tt := range tests {
-		got := normalizeDomain(tt.input)
-		if got != tt.want {
-			t.Errorf("normalizeDomain(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-// TestShortSource verifies that operators see concise rule references in CLI
-// match output by asserting that shortSource strips directory prefixes and
-// preserves the line number suffix.
-func TestShortSource(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"/var/dns/blacklist/ads.txt:42", "ads.txt:42"},
-		{"rules.txt:1", "rules.txt:1"},
-		{"/a/b/c/list.hosts:100", "list.hosts:100"},
-		{"", "unknown"},
-		{"nolineinfo", "nolineinfo"},
-	}
-	for _, tt := range tests {
-		got := shortSource(tt.input)
-		if got != tt.want {
-			t.Errorf("shortSource(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-// TestWriteRuleDetail verifies that the CLI match command shows the rule source
-// and pattern for matched queries by asserting that writeRuleDetail formats the
-// first matching rule ID into a human-readable reference.
-func TestWriteRuleDetail(t *testing.T) {
-	tests := []struct {
-		name     string
-		ruleIDs  []uint32
-		sources  []string
-		patterns []string
-		want     string
-	}{
-		{
-			name:     "shows source and pattern",
-			ruleIDs:  []uint32{0},
-			sources:  []string{"/etc/bl/deny.txt:3"},
-			patterns: []string{"ads.example.com"},
-			want:     " rule=deny.txt:3 (ads.example.com)",
-		},
-		{
-			name:     "shows source without pattern",
-			ruleIDs:  []uint32{0},
-			sources:  []string{"/etc/bl/deny.txt:3"},
-			patterns: []string{""},
-			want:     " rule=deny.txt:3",
-		},
-		{
-			name:    "empty ruleIDs produces no output",
-			ruleIDs: nil,
-			sources: []string{"/etc/bl/deny.txt:3"},
-			want:    "",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			writeRuleDetail(&buf, tt.ruleIDs, tt.sources, tt.patterns)
-			if got := buf.String(); got != tt.want {
-				t.Errorf("writeRuleDetail() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestFilterRulesForList verifies that the CLI uses the same @@ filtering
-// semantics as the watcher: blacklist directories exclude exception rules,
-// and whitelist directories select only @@ rules by default or non-@@ rules
-// when inverted.
-//
-// This test covers the filterRulesForList and keepRules helpers.
-//
-// It asserts each combination of label and invert flag against a mixed set
-// of allow and deny rules.
-func TestFilterRulesForList(t *testing.T) {
-	rules := []listparser.Rule{
-		{Pattern: "block.example.com", IsAllow: false},
-		{Pattern: "allow.example.com", IsAllow: true},
-	}
-
-	tests := []struct {
-		name    string
-		label   string
-		invert  bool
-		wantLen int
-		wantPat string
-	}{
-		{"denylist keeps non-@@ rules", "denylist", false, 1, "block.example.com"},
-		{"allowlist default keeps @@ rules", "allowlist", false, 1, "allow.example.com"},
-		{"allowlist inverted keeps non-@@ rules", "allowlist", true, 1, "block.example.com"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := filterRulesForList(rules, tt.label, tt.invert)
-			if len(got) != tt.wantLen {
-				t.Fatalf("filterRulesForList len = %d, want %d", len(got), tt.wantLen)
-			}
-			if got[0].Pattern != tt.wantPat {
-				t.Fatalf("filterRulesForList[0].Pattern = %q, want %q", got[0].Pattern, tt.wantPat)
-			}
-		})
-	}
-}
-
-// TestRunMatchInvertWhitelist verifies that the --invert-whitelist flag changes
-// which rules from the whitelist directory are compiled by asserting that
-// ||domain^ entries are used for whitelisting when the flag is set.
-func TestRunMatchInvertWhitelist(t *testing.T) {
-	wlDir := t.TempDir()
-	blDir := t.TempDir()
-	writeFilterFile(t, wlDir, "allow.txt", "||safe.example.com^\n")
-	writeFilterFile(t, blDir, "deny.txt", "||safe.example.com^\n||ads.example.com^\n")
-
-	// Without --invert-allowlist: ||safe.example.com^ has IsAllow=false, so it
-	// is filtered out of the allowlist. safe.example.com ends up DENYLISTED.
-	var stdout, stderr bytes.Buffer
-	code := run([]string{"match", "--allowlist", wlDir, "--denylist", blDir, "--name", "safe.example.com"}, &stdout, &stderr)
+	code := run([]string{"validate"}, &stdout, &stderr)
 	if code != 1 {
-		t.Fatalf("without invert: code = %d, want 1 (DENYLISTED)", code)
+		t.Fatalf("run(validate) code = %d, want 1", code)
 	}
-	if !strings.Contains(stdout.String(), "DENYLISTED") {
-		t.Fatalf("without invert: stdout = %q, want DENYLISTED", stdout.String())
+	if !strings.Contains(stderr.String(), "at least one --list DIR is required") {
+		t.Fatalf("stderr = %q, want missing list message", stderr.String())
 	}
+}
 
-	// With --invert-allowlist: ||safe.example.com^ is now an allowlist entry.
-	stdout.Reset()
-	stderr.Reset()
-	code = run([]string{"match", "--allowlist", wlDir, "--denylist", blDir, "--invert-allowlist", "--name", "safe.example.com"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("with invert: code = %d, want 0 (ALLOWLISTED)", code)
+// TestRunValidateRejectsNegativeMaxStates verifies that operators receive a
+// clear validation error for invalid state limits.
+//
+// This test covers flag validation in the validate command path.
+//
+// It asserts that --max-states < 0 is rejected.
+func TestRunValidateRejectsNegativeMaxStates(t *testing.T) {
+	listDir := t.TempDir()
+	writeFilterFile(t, listDir, "rules.txt", "||ads.example.com^\n")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"validate", "--list", listDir, "--max-states", "-1"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run(validate) code = %d, want 1", code)
 	}
-	if !strings.Contains(stdout.String(), "ALLOWLISTED") {
-		t.Fatalf("with invert: stdout = %q, want ALLOWLISTED", stdout.String())
+	if !strings.Contains(stderr.String(), "--max-states must be >= 0") {
+		t.Fatalf("stderr = %q, want max-states validation message", stderr.String())
+	}
+}
+
+// TestRunValidateAcceptsUncappedMaxStates verifies that operators can
+// explicitly disable DFA state capping during offline validation.
+//
+// This test covers the validate command flag handling for max state limits.
+//
+// It asserts that --max-states 0 is accepted and still compiles valid input.
+func TestRunValidateAcceptsUncappedMaxStates(t *testing.T) {
+	listDir := t.TempDir()
+	writeFilterFile(t, listDir, "rules.txt", "||ads.example.com^\n")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"validate", "--list", listDir, "--max-states", "0"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run(validate) code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "compiled:") {
+		t.Fatalf("stdout = %q, want compile summary", stdout.String())
 	}
 }

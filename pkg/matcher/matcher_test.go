@@ -1,7 +1,6 @@
 package matcher
 
 import (
-	"bytes"
 	"fmt"
 	"testing"
 
@@ -202,43 +201,6 @@ func TestCaseInsensitive(t *testing.T) {
 		if !matched {
 			t.Errorf("Match(%q) should match", input)
 		}
-	}
-}
-
-// TestDumpDotWildcard verifies that users can export the wildcard DFA for
-// visualization by asserting that DumpDot produces valid DOT output.
-func TestDumpDotWildcard(t *testing.T) {
-	rules := []listparser.Rule{
-		{Pattern: "*.example.com"},
-	}
-	m, err := CompileRules(rules, CompileOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	if err := m.DumpDot(&buf); err != nil {
-		t.Fatal(err)
-	}
-	if buf.Len() == 0 {
-		t.Error("expected non-empty DOT output")
-	}
-}
-
-// TestDumpDotNoWildcard verifies that DumpDot returns an error when no
-// wildcard DFA exists.
-func TestDumpDotNoWildcard(t *testing.T) {
-	rules := []listparser.Rule{
-		{Pattern: "example.com"},
-	}
-	m, err := CompileRules(rules, CompileOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	if err := m.DumpDot(&buf); err == nil {
-		t.Error("expected error for literal-only matcher")
 	}
 }
 
