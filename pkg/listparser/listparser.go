@@ -24,6 +24,17 @@ import (
 	"golang.org/x/net/idna"
 )
 
+const (
+	// maxRuleLineBytes bounds one physical line read from list files.
+	maxRuleLineBytes = 8192
+	// maxLinesPerFile bounds the total number of lines parsed from one list file.
+	maxLinesPerFile = 200_000
+	// maxDNSNameLength follows the practical RFC DNS name length without root dot.
+	maxDNSNameLength = 253
+	// maxDNSLabelLength follows RFC host label length limits.
+	maxDNSLabelLength = 63
+)
+
 // Rule represents one canonicalized filter entry ready for compilation.
 type Rule struct {
 	// Pattern is the canonical domain pattern.
@@ -80,9 +91,13 @@ func ParseFile(path string, logger Logger) (rules []Rule, err error) {
 	}()
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, maxRuleLineBytes), maxRuleLineBytes)
 	lineNum := 0
 	for scanner.Scan() {
 		lineNum++
+		if lineNum > maxLinesPerFile {
+			return rules, fmt.Errorf("listparser: %s exceeds max line count (%d)", cleanPath, maxLinesPerFile)
+		}
 		line := scanner.Text()
 		rule, parseErr := ParseLine(line)
 		if parseErr != nil {
@@ -100,6 +115,9 @@ func ParseFile(path string, logger Logger) (rules []Rule, err error) {
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
+		if errors.Is(scanErr, bufio.ErrTooLong) {
+			return rules, fmt.Errorf("listparser: read %s: line exceeds max length of %d bytes", cleanPath, maxRuleLineBytes)
+		}
 		return rules, fmt.Errorf("listparser: read %s: %w", cleanPath, scanErr)
 	}
 	return rules, nil
@@ -148,6 +166,8 @@ func ParseLine(line string) (Rule, error) {
 		return rule, nil
 	} else if errors.Is(err, errSkip) {
 		return Rule{}, errSkip
+	} else if err != nil && !errors.Is(err, errNotHosts) {
+		return Rule{}, err
 	}
 	// err == errNotHosts means it's not a hosts line, fall through
 
@@ -199,7 +219,7 @@ func tryParseHosts(line string, isAllow bool) (Rule, error) {
 	if needsIDNConversion(domain) {
 		ascii, err := toASCII(domain)
 		if err != nil {
-			return Rule{}, errNotHosts
+			return Rule{}, fmt.Errorf("invalid hosts domain %q: IDNA conversion failed", domain)
 		}
 		domain = ascii
 	}
@@ -210,7 +230,7 @@ func tryParseHosts(line string, isAllow bool) (Rule, error) {
 	}
 
 	if !isValidDNSName(domain) {
-		return Rule{}, errNotHosts
+		return Rule{}, fmt.Errorf("invalid hosts domain %q: does not follow DNS host label rules", domain)
 	}
 
 	return Rule{Pattern: domain, IsAllow: isAllow}, nil
@@ -326,6 +346,10 @@ func parseAdGuardPattern(s string) (string, error) {
 		return "", fmt.Errorf("single label without anchor not supported: %s", s)
 	}
 
+	if err := validatePatternRFC(s); err != nil {
+		return "", fmt.Errorf("invalid domain pattern %q: %w", truncate(s), err)
+	}
+
 	return s, nil
 }
 
@@ -413,12 +437,72 @@ func isValidDNSName(name string) bool {
 	if name == "" {
 		return false
 	}
-	for _, r := range strings.ToLower(name) {
+	lower := strings.ToLower(name)
+	for _, r := range lower {
 		if !isDNSChar(r) && r != '*' {
 			return false
 		}
 	}
-	return true
+	return validatePatternRFC(lower) == nil
+}
+
+// validatePatternRFC applies RFC-like host label validation to one canonical
+// domain pattern while allowing wildcard characters used by filter rules.
+func validatePatternRFC(pattern string) error {
+	if pattern == "" {
+		return errors.New("empty domain")
+	}
+	if len(pattern) > maxDNSNameLength {
+		return fmt.Errorf("domain length %d exceeds %d", len(pattern), maxDNSNameLength)
+	}
+	if strings.HasPrefix(pattern, ".") || strings.HasSuffix(pattern, ".") || strings.Contains(pattern, "..") {
+		return errors.New("contains empty label")
+	}
+
+	labels := strings.Split(pattern, ".")
+	for _, label := range labels {
+		if err := validatePatternLabel(label); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validatePatternLabel(label string) error {
+	if label == "" {
+		return errors.New("empty label")
+	}
+	if len(label) > maxDNSLabelLength {
+		return fmt.Errorf("label %q exceeds %d characters", truncate(label), maxDNSLabelLength)
+	}
+
+	if strings.Contains(label, "*") {
+		stripped := strings.ReplaceAll(label, "*", "")
+		if stripped == "" {
+			return nil
+		}
+		if stripped[0] == '-' || stripped[len(stripped)-1] == '-' {
+			return fmt.Errorf("label %q starts or ends with hyphen", truncate(label))
+		}
+		for _, r := range stripped {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return fmt.Errorf("label %q contains invalid character %q", truncate(label), r)
+			}
+		}
+		return nil
+	}
+
+	if label[0] == '-' || label[len(label)-1] == '-' {
+		return fmt.Errorf("label %q starts or ends with hyphen", truncate(label))
+	}
+	for _, r := range label {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return fmt.Errorf("label %q contains invalid character %q", truncate(label), r)
+		}
+	}
+
+	return nil
 }
 
 // toASCII converts name into its ASCII DNS representation via IDNA lookup.
