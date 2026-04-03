@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -598,6 +599,98 @@ func TestParseLineIDNMatchesDNSQuery(t *testing.T) {
 	}
 	if runicode.Pattern != rpuny.Pattern {
 		t.Errorf("Unicode pattern %q != Punycode pattern %q", runicode.Pattern, rpuny.Pattern)
+	}
+}
+
+// TestParseLineRejectsInvalidRFCLabels verifies that users get explicit parser
+// feedback for domain labels that violate RFC-style host label rules.
+//
+// This test covers AdGuard-style pattern validation in the listparser package.
+//
+// It asserts that leading/trailing hyphens, empty labels, and oversized labels
+// are rejected with non-skip errors.
+func TestParseLineRejectsInvalidRFCLabels(t *testing.T) {
+	tooLongLabel := strings.Repeat("a", maxDNSLabelLength+1) + ".example"
+	invalid := []string{
+		"||-bad.example^",
+		"||bad-.example^",
+		"||bad..example^",
+		"||" + tooLongLabel + "^",
+	}
+
+	for _, line := range invalid {
+		_, err := ParseLine(line)
+		if err == nil || errors.Is(err, errSkip) {
+			t.Errorf("ParseLine(%q) expected non-skip error, got %v", line, err)
+		}
+	}
+}
+
+// TestParseLineHostsInvalidDomainReturnsError verifies that users get explicit
+// warnings for malformed hosts-style domains instead of silent fallback.
+//
+// This test covers hosts-format parsing in the listparser package.
+//
+// It asserts that malformed hosts domains return a non-skip parse error.
+func TestParseLineHostsInvalidDomainReturnsError(t *testing.T) {
+	_, err := ParseLine("0.0.0.0 -bad.example")
+	if err == nil || errors.Is(err, errSkip) {
+		t.Fatalf("ParseLine hosts invalid domain expected error, got %v", err)
+	}
+}
+
+// TestParseFileRejectsOverlongLine verifies that users get a hard validation
+// error when list files exceed the configured per-line length budget.
+//
+// This test covers ParseFile physical line length limits in the listparser
+// package.
+//
+// It asserts that ParseFile fails with a line-length message for oversized
+// lines.
+func TestParseFileRejectsOverlongLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "long.txt")
+	line := strings.Repeat("a", maxRuleLineBytes+1)
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ParseFile(path, nil)
+	if err == nil {
+		t.Fatal("expected ParseFile error for overlong line")
+	}
+	if !strings.Contains(err.Error(), "line exceeds max length") {
+		t.Fatalf("error = %v, want line length message", err)
+	}
+}
+
+// TestParseFileRejectsTooManyLines verifies that users get a deterministic
+// safety stop for list files that exceed the configured line-count budget.
+//
+// This test covers ParseFile line-count limits in the listparser package.
+//
+// It asserts that ParseFile returns an explicit error once maxLinesPerFile is
+// exceeded.
+func TestParseFileRejectsTooManyLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "many.txt")
+
+	var b strings.Builder
+	for i := 0; i <= maxLinesPerFile; i++ {
+		b.WriteString("||")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(".example^\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ParseFile(path, nil)
+	if err == nil {
+		t.Fatal("expected ParseFile error for too many lines")
+	}
+	if !strings.Contains(err.Error(), "exceeds max line count") {
+		t.Fatalf("error = %v, want line count message", err)
 	}
 }
 
