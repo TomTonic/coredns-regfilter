@@ -21,7 +21,7 @@ This is a Go project using Go modules.
 
 ### Test documentation
 
-Every test function needs a doc comment structured **outside-in**:
+Every test function needs an English doc comment structured **outside-in**:
 1. What the tested code achieves for the end user (in user terms)
 2. Which module or feature area the tested code belongs to
 3. What specific behavior this test verifies
@@ -31,7 +31,7 @@ sub-test a descriptive assertion-style name.
 
 ### Function and method documentation
 
-Every exported function/method needs a godoc comment covering:
+Every exported function/method needs an English godoc comment covering:
 1. Concise summary (starting with the function name)
 2. Parameter specification (type, valid range, purpose)
 3. Return values (success and error cases)
