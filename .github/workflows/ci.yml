@@ -52,5 +52,5 @@ jobs:
       - name: Run CLI validate
         run: |
           ./build/filterlist-check validate \
-            --allowlist testdata/filterlists/allowlist \
-            --denylist testdata/filterlists/denylist
+            --list testdata/filterlists/allowlist \
+            --list testdata/filterlists/denylist
