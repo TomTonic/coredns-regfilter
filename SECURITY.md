@@ -24,6 +24,14 @@ fix or mitigation within 7 days for critical issues.
 - Per-file parser limits are enforced: max line length `8192` bytes and max
 	line count `200000`
 - Compile-time limits (MaxStates, timeout) prevent resource exhaustion
+- When `disable_RFC_checks` is `off` (the default), every DNS query name is
+	validated at query time against RFC 1035 LDH syntax and the IDNA Lookup
+	profile (RFCs 5890–5894); names that fail this check are blocked before the
+	denylist matcher is consulted. This limits the attack surface for unusual or
+	malformed query names.
+- When `deny_non_allowlisted` is `on`, every query not present in the allowlist
+	is blocked in the denylist phase before the denylist matcher is consulted,
+	providing a deny-by-default posture.
 
 ### Resource Limits
 - DFA compilation is bounded by `max_states` and `compile_timeout`

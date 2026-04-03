@@ -725,3 +725,264 @@ func TestServeDNSDebugNoMatch(t *testing.T) {
 		t.Error("expected next handler for non-matched query")
 	}
 }
+
+// ── RFC / IDNA query-name validation (isStrictDNSQueryName) ──────────────────
+
+// ── disable_RFC_checks in ServeDNS ───────────────────────────────────────────
+
+// TestServeDNSRFCBlocksInvalidName verifies that end users cannot resolve
+// RFC 1035-non-compliant names when disable_RFC_checks is false (the default).
+//
+// This test covers the denylist-phase RFC precheck in ServeDNS.
+//
+// It asserts that a query for a name with an underscore label returns NXDOMAIN
+// and does not reach the next handler.
+func TestServeDNSRFCBlocksInvalidName(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:           ActionConfig{Mode: "nxdomain"},
+			DisableRFCChecks: false, // RFC checks active (default)
+		},
+	}
+
+	w := newMockWriter()
+	r := makeQuery("_bad.example.com.", dns.TypeA)
+
+	code, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN for RFC-invalid name, got %d", code)
+	}
+	if next.called {
+		t.Error("next handler must not be called for RFC-invalid name")
+	}
+}
+
+// TestServeDNSRFCAllowedByDisableRFCChecks verifies that operators can
+// disable the RFC name check so that legacy or non-standard names still
+// resolve normally.
+//
+// This test covers the disable_RFC_checks config switch in ServeDNS.
+//
+// It asserts that a query for an RFC-invalid name (underscore label) reaches
+// the next handler when disable_RFC_checks is true.
+func TestServeDNSRFCAllowedByDisableRFCChecks(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:           ActionConfig{Mode: "nxdomain"},
+			DisableRFCChecks: true, // RFC checks disabled
+		},
+	}
+
+	w := newMockWriter()
+	r := makeQuery("_srv._tcp.example.com.", dns.TypeA)
+
+	_, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.called {
+		t.Error("expected next handler when disable_RFC_checks is true")
+	}
+}
+
+// TestServeDNSRFCUpdatesMetrics verifies that operators can observe blocked
+// RFC-invalid queries through the standard denylist metrics.
+//
+// This test covers metric instrumentation for the RFC precheck in ServeDNS.
+//
+// It asserts that DenylistChecks and DenylistHits are each incremented by one
+// when an RFC-invalid name is blocked by the RFC precheck.
+func TestServeDNSRFCUpdatesMetrics(t *testing.T) {
+	m, _ := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next:    next,
+		Config:  Config{Action: ActionConfig{Mode: "nxdomain"}, DisableRFCChecks: false},
+		metrics: m,
+	}
+
+	w := newMockWriter()
+	r := makeQuery("_bad.example.com.", dns.TypeA)
+	_, _ = rf.ServeDNS(context.Background(), w, r)
+
+	if got := getCounterValue(t, m.DenylistChecks); got != 1 {
+		t.Errorf("DenylistChecks = %v, want 1", got)
+	}
+	if got := getCounterValue(t, m.DenylistHits); got != 1 {
+		t.Errorf("DenylistHits = %v, want 1", got)
+	}
+}
+
+// TestServeDNSRFCRunsAfterAllowlist verifies that allowlisted names bypass the
+// RFC precheck so that operators can intentionally resolve RFC-non-compliant
+// names that appear in their allowlists.
+//
+// This test covers the query-path ordering guarantee: allowlist → RFC check.
+//
+// It asserts that a name that would fail the RFC check is forwarded when it
+// is present in the allowlist.
+func TestServeDNSRFCRunsAfterAllowlist(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:           ActionConfig{Mode: "nxdomain"},
+			DisableRFCChecks: false,
+		},
+	}
+	rf.SetAllowlist(buildMatcher(t, []string{"_bad.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("_bad.example.com.", dns.TypeA)
+	_, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.called {
+		t.Error("allowlisted name should bypass RFC check and reach next handler")
+	}
+}
+
+// ── deny_non_allowlisted in ServeDNS ─────────────────────────────────────────
+
+// TestServeDNSDenyNonAllowlistedBlocksAfterMiss verifies that end users are
+// blocked when deny_non_allowlisted is true and the name is not in the
+// allowlist.
+//
+// This test covers the deny_non_allowlisted precheck in the denylist phase.
+//
+// It asserts that a query for a name absent from the allowlist returns NXDOMAIN
+// and does not reach the next handler.
+func TestServeDNSDenyNonAllowlistedBlocksAfterMiss(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:             ActionConfig{Mode: "nxdomain"},
+			DenyNonAllowlisted: true,
+			DisableRFCChecks:   true, // isolate the deny_non_allowlisted behavior
+		},
+	}
+	rf.SetAllowlist(buildMatcher(t, []string{"safe.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("other.example.com.", dns.TypeA)
+	code, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN for non-allowlisted name, got %d", code)
+	}
+	if next.called {
+		t.Error("next handler must not be called for non-allowlisted name")
+	}
+}
+
+// TestServeDNSDenyNonAllowlistedHonorsAllowlist verifies that allowlisted names
+// still resolve normally even when deny_non_allowlisted is enabled.
+//
+// This test covers the interaction between allowlist acceptance and the
+// deny_non_allowlisted config switch.
+//
+// It asserts that a query for a name present in the allowlist is forwarded to
+// the next handler.
+func TestServeDNSDenyNonAllowlistedHonorsAllowlist(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:             ActionConfig{Mode: "nxdomain"},
+			DenyNonAllowlisted: true,
+			DisableRFCChecks:   true,
+		},
+	}
+	rf.SetAllowlist(buildMatcher(t, []string{"safe.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("safe.example.com.", dns.TypeA)
+	_, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.called {
+		t.Error("allowlisted name must reach next handler even with deny_non_allowlisted")
+	}
+}
+
+// TestServeDNSDenyNonAllowlistedUpdatesMetrics verifies that operators can
+// observe deny_non_allowlisted decisions through the denylist metrics.
+//
+// This test covers metric instrumentation for the deny_non_allowlisted precheck.
+//
+// It asserts that DenylistChecks and DenylistHits are each incremented by one
+// for a query blocked by the deny_non_allowlisted precheck.
+func TestServeDNSDenyNonAllowlistedUpdatesMetrics(t *testing.T) {
+	m, _ := newMetrics(t)
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:             ActionConfig{Mode: "nxdomain"},
+			DenyNonAllowlisted: true,
+			DisableRFCChecks:   true,
+		},
+		metrics: m,
+	}
+	rf.SetAllowlist(buildMatcher(t, []string{"safe.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("other.example.com.", dns.TypeA)
+	_, _ = rf.ServeDNS(context.Background(), w, r)
+
+	if got := getCounterValue(t, m.DenylistChecks); got != 1 {
+		t.Errorf("DenylistChecks = %v, want 1", got)
+	}
+	if got := getCounterValue(t, m.DenylistHits); got != 1 {
+		t.Errorf("DenylistHits = %v, want 1", got)
+	}
+}
+
+// TestServeDNSDenyNonAllowlistedRunsBeforeRFC verifies that deny_non_allowlisted
+// takes precedence over the RFC precheck so that operators get the fastest
+// possible block for non-allowlisted queries when both switches are active.
+//
+// This test covers the query-path ordering guarantee:
+// deny_non_allowlisted → RFC check.
+//
+// It asserts that a non-allowlisted RFC-invalid name is still blocked (NXDOMAIN)
+// when both deny_non_allowlisted and RFC checks are active, confirming that the
+// deny_non_allowlisted check operates regardless of name validity.
+func TestServeDNSDenyNonAllowlistedRunsBeforeRFC(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:             ActionConfig{Mode: "nxdomain"},
+			DenyNonAllowlisted: true,
+			DisableRFCChecks:   false,
+		},
+	}
+	rf.SetAllowlist(buildMatcher(t, []string{"safe.example.com"}))
+
+	w := newMockWriter()
+	// "_bad" is RFC-invalid and not allowlisted — blocked by deny_non_allowlisted.
+	r := makeQuery("_bad.example.com.", dns.TypeA)
+	code, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN, got %d", code)
+	}
+	if next.called {
+		t.Error("next handler must not be called")
+	}
+}
