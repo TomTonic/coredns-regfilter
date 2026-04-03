@@ -8,7 +8,9 @@
 #   4. Add variable GRYPE_BADGE_GIST_ID = the gist ID (can reuse the coverage gist)
 #
 # Badge markdown for your README:
-#   [![Vulnerabilities](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/<USER>/<GIST_ID>/raw/<REPO>-grype.json)](https://gist.github.com/<USER>/<GIST_ID>#file-<REPO>-grype-md)
+#   [![Vulnerabilities](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/
+#   <USER>/<GIST_ID>/raw/<REPO>-grype.json)](https://gist.github.com/
+#   <USER>/<GIST_ID>#file-<REPO>-grype-md)
 
 name: Security Badge
 
