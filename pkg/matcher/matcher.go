@@ -8,8 +8,17 @@
 // wildcard support.
 //
 // Callers can also request a pure DFA representation that compiles every rule
-// into one automaton. In that mode literal suffix rules are expanded so the DFA
-// preserves the same ||domain^ semantics as the default suffix-map path.
+// into one automaton. In both modes the ||domain^ anchoring semantics are
+// preserved: a rule for "example.com" matches both the exact domain and any
+// subdomain such as "www.example.com".
+//
+// DFA patterns are compiled in reversed form and matched against the input
+// walked from right to left. The reversal naturally anchors the pattern at the
+// domain suffix, and the [automaton.DFA.MatchDomain] method records a hit
+// whenever an accepting state coincides with a DNS label boundary ('.' or
+// start-of-name). This replaces the earlier approach of generating synthetic
+// "*.<pattern>" variants, which caused exponential DFA state growth when the
+// original pattern already contained wildcards.
 //
 // Example usage:
 //
@@ -37,9 +46,9 @@ type Logger interface {
 // Mode selects how the matcher represents parsed rules at runtime.
 //
 // ModeHybrid stores literal rules in a suffix map and compiles only wildcard
-// rules into a DFA. ModeDFA compiles every rule into one DFA. To preserve the
-// suffix semantics of literal rules, ModeDFA expands each literal domain into
-// an exact-match pattern and a subdomain pattern.
+// rules into a DFA. ModeDFA compiles every rule into one DFA. Both modes
+// preserve ||domain^ suffix semantics through reversed-pattern DFA matching;
+// see [automaton.DFA.MatchDomain].
 type Mode string
 
 const (
@@ -99,9 +108,13 @@ type Matcher struct {
 // field is inspected and lowercased. In the default hybrid mode, patterns
 // without '*' are treated as literal domain suffixes and stored in the suffix
 // map, while patterns containing '*' are compiled through the automaton
-// package. In pure DFA mode, every rule is compiled through the automaton and
-// literal rules are expanded to preserve suffix semantics. Rule indices are
-// used as rule IDs for match attribution.
+// package. In pure DFA mode, every rule is compiled through the automaton.
+// Rule indices are used as rule IDs for match attribution.
+//
+// All DFA patterns are stored in reversed form so that
+// [automaton.DFA.MatchDomain] can walk the input backwards and check
+// acceptance at DNS label boundaries, preserving ||domain^ semantics without
+// extra synthetic patterns.
 //
 // Returns an error if DFA compilation fails (e.g. state limit exceeded or
 // timeout). An empty rule set produces a valid Matcher that never matches.
@@ -120,7 +133,10 @@ func CompileRules(rules []listparser.Rule, opts CompileOptions) (*Matcher, error
 	for i, r := range rules {
 		pattern := strings.ToLower(r.Pattern)
 		if strings.Contains(pattern, "*") {
-			wildcardPatterns = appendDFAPatternVariants(wildcardPatterns, pattern, uint32(i))
+			wildcardPatterns = append(wildcardPatterns, automaton.Pattern{
+				Expr:   reverseASCII(pattern),
+				RuleID: uint32(i),
+			})
 		} else {
 			literalEntries[pattern] = append(literalEntries[pattern], uint32(i))
 		}
@@ -130,7 +146,7 @@ func CompileRules(rules []listparser.Rule, opts CompileOptions) (*Matcher, error
 		len(rules), len(literalEntries), len(wildcardPatterns), mode)
 
 	if mode == ModeDFA {
-		dfa, err := automaton.Compile(buildDFAPatterns(rules), automaton.CompileOptions{
+		dfa, err := automaton.Compile(buildReversedDFAPatterns(rules), automaton.CompileOptions{
 			MaxStates:      opts.MaxStates,
 			CompileTimeout: opts.CompileTimeout,
 			Minimize:       opts.Minimize,
@@ -170,6 +186,10 @@ func CompileRules(rules []listparser.Rule, opts CompileOptions) (*Matcher, error
 // Returns true if any stored pattern matches, along with all matching rule IDs.
 // The suffix map is checked first; if both literal and wildcard patterns match,
 // all rule IDs are combined.
+//
+// The DFA was compiled from reversed patterns, so Match delegates to
+// [automaton.DFA.MatchDomain] which walks the input backwards and checks
+// acceptance at DNS label boundaries.
 func (m *Matcher) Match(input string) (matched bool, ruleIDs []uint32) {
 	if m == nil {
 		return false, nil
@@ -185,7 +205,7 @@ func (m *Matcher) Match(input string) (matched bool, ruleIDs []uint32) {
 	}
 
 	if m.dfa != nil {
-		if hit, ids := m.dfa.Match(input); hit {
+		if hit, ids := m.dfa.MatchDomain(input); hit {
 			matched = true
 			ruleIDs = append(ruleIDs, ids...)
 		}
@@ -221,33 +241,32 @@ func normalizeMode(mode Mode) Mode {
 	return parsed
 }
 
-// buildDFAPatterns expands rules into DFA patterns that preserve the
-// repository's suffix semantics for host-style filters.
-func buildDFAPatterns(rules []listparser.Rule) []automaton.Pattern {
-	patterns := make([]automaton.Pattern, 0, len(rules)*2)
+// buildReversedDFAPatterns converts rules into reversed DFA patterns.
+//
+// Each pattern is lowercased and reversed so the resulting DFA can be queried
+// with [automaton.DFA.MatchDomain], which walks the input backwards and
+// checks acceptance at DNS label boundaries.
+func buildReversedDFAPatterns(rules []listparser.Rule) []automaton.Pattern {
+	patterns := make([]automaton.Pattern, 0, len(rules))
 	for i, rule := range rules {
-		pattern := strings.ToLower(rule.Pattern)
-		patterns = appendDFAPatternVariants(patterns, pattern, uint32(i))
+		patterns = append(patterns, automaton.Pattern{
+			Expr:   reverseASCII(strings.ToLower(rule.Pattern)),
+			RuleID: uint32(i),
+		})
 	}
 	return patterns
 }
 
-// appendDFAPatternVariants adds the exact DFA pattern plus, when required, a
-// synthetic subdomain variant so DFA-backed matching preserves ||domain^
-// semantics for both literal and wildcard host rules.
-func appendDFAPatternVariants(patterns []automaton.Pattern, pattern string, ruleID uint32) []automaton.Pattern {
-	patterns = append(patterns, automaton.Pattern{Expr: pattern, RuleID: ruleID})
-	if needsSubdomainVariant(pattern) {
-		patterns = append(patterns, automaton.Pattern{Expr: "*." + pattern, RuleID: ruleID})
+// reverseASCII returns s with its bytes in reverse order.
+//
+// This is correct for DNS patterns because they contain only ASCII characters
+// (a-z, 0-9, '-', '.', '*'), so each rune is exactly one byte.
+func reverseASCII(s string) string {
+	b := []byte(s)
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
 	}
-	return patterns
-}
-
-func needsSubdomainVariant(pattern string) bool {
-	if !strings.Contains(pattern, ".") {
-		return false
-	}
-	return !strings.HasPrefix(pattern, "*.")
+	return string(b)
 }
 
 func nopLogf(string, ...interface{}) {}

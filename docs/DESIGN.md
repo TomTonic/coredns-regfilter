@@ -21,9 +21,10 @@ dominated by literal entries, while retaining full wildcard support through the
 DFA path.
 
 When `matcher_mode dfa` is enabled, the plugin compiles every rule into a
-single DFA instead. Literal domain rules are expanded into an exact-match DFA
-pattern and a subdomain DFA pattern (`*.example.com`) so the pure-DFA mode
-preserves the same `||domain^` semantics as the default suffix-map path.
+single DFA instead. All patterns are stored in reversed byte order and matched
+through `DFA.MatchDomain`, which walks the query name backwards and accepts at
+DNS label boundaries. This naturally preserves `||domain^` anchoring semantics
+for both literal and wildcard rules without generating extra patterns.
 
 The design goal is not to implement a full browser filter engine. The plugin
 focuses on the subset of AdGuard, EasyList, and hosts-style syntax that can be
@@ -237,19 +238,21 @@ The matcher pipeline depends on `matcher_mode`:
     matches both `example.com` itself and any subdomain such as `sub.example.com`.
     Lookup cost is O(k) where k is the number of DNS labels.
 
-  - Patterns containing `*` are compiled through the automaton package:
-    Thompson-style NFA construction, subset construction, optional Hopcroft
-    minimization, and a cache-friendly array-based DFA for O(n) matching.
+  - Patterns containing `*` are reversed and compiled through the automaton
+    package: Thompson-style NFA construction, subset construction, optional
+    Hopcroft minimization, and a cache-friendly array-based DFA. At query
+    time, `DFA.MatchDomain` walks the query name backwards and checks
+    acceptance at DNS label boundaries for O(n) matching with implicit
+    subdomain coverage.
 
 - In `dfa` mode:
 
-  - Patterns containing `*` are compiled unchanged.
-  - Literal patterns are expanded into two DFA patterns: the exact host itself
-    and a `*.`-prefixed variant that covers subdomains without changing the
-    original filter semantics.
-  - This can reduce request-path lookup time, but it substantially increases
-    compile work during startup and hot reloads because every literal rule now
-    participates in the automaton pipeline.
+  - All patterns (literal and wildcard) are reversed and compiled into a
+    single DFA. `DFA.MatchDomain` provides the same `||domain^` anchoring
+    semantics without generating extra variant patterns.
+  - This can reduce request-path lookup time, but it increases compile work
+    during startup and hot reloads because every literal rule now participates
+    in the automaton pipeline.
 
 That internal pipeline is useful to know, but the externally visible contract
 is simpler: a directory compile either yields a new immutable snapshot or the
