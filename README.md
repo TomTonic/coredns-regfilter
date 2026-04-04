@@ -17,7 +17,7 @@ That makes whitelist precedence explicit and keeps per-query matching on the hot
 
 - **Filter list support**: Parses AdGuard, EasyList, ABP, and hosts-style filter lists
 - **Selectable matcher mode**: default hybrid mode uses a suffix map for literals plus a DFA for wildcards; `matcher_mode dfa` compiles all rules into one DFA
-- **Ultra fast**: <200ns (0.0002ms) filtering time per query, less 10s for full compilation/DFA construction for standard AdGuard DNS filter list
+- **Ultra fast**: about 200ns (0.0002ms) latency per query, less than 5s for full compilation/DFA construction for standard AdGuard DNS filter list (.5s compilation time for hybrid mode)
 - **Hot reload**: Watches filter list directories and recompiles matchers on changes
 - **Allowlist precedence**: Domains in the allowlist are always allowed, even if blacklisted
 - **Multiple block actions**: NXDOMAIN, REFUSE, or null IP responses
@@ -210,7 +210,7 @@ Those tests assert that:
 - `deny_non_allowlisted on` enables deny-by-default mode: every query that is not explicitly matched by the allowlist is blocked in the denylist phase, before the denylist matcher is consulted. Requires at least one configured allowlist to be useful. Default is `off`.
 - `disable_RFC_checks` controls the RFC 1035 + IDNA Lookup-profile query-name precheck. When `off` (the default), queries whose names violate LDH syntax, label-length limits, or IDNA encoding are blocked immediately after the `deny_non_allowlisted` check and before the denylist matcher. The implementation uses a tight scan with per-label and total-length counters on the ASCII fast path and only calls IDNA conversion when it sees an ACE-prefix label (`xn--`). Set it to `on` to skip this check for environments that host non-standard names (for example, names with underscores used by some services).
 - `matcher_mode hybrid` is the default and keeps startup and reload compile times much lower by storing literal rules in the suffix map and compiling only wildcard rules into the DFA.
-- `matcher_mode dfa` compiles every rule into one DFA. In the `BenchmarkSequenceMapVsDFA` benchmark with the bundled realistic denylist samples and Cloudflare top-domain input, that reduced lookup cost from about `125-135 ns/domain` to about `93-95 ns/domain`, but increased compile time from about `0.34 s` to about `7.1 s`. Use it when request-path latency matters more than reload speed.
+- `matcher_mode dfa` compiles every rule into one DFA (also the literal ones). In the `BenchmarkSequenceMapVsDFA` benchmark with the bundled realistic denylist samples and Cloudflare top-domain input, that is allocation free and reduced lookup cost about 5%, but increased compile time from about `0.5 s` to about `5 s`. Use it when request-path latency matters more than reload speed.
 
 ## Query Flow
 
