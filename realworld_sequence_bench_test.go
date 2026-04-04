@@ -88,8 +88,6 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 			}
 		}
 
-		b.Logf("seq=%d hybrid_hits=%d(%.2f%%) pure_hits=%d(%.2f%%)", seqLen, hybridHits, float64(hybridHits)/float64(seqLen)*100.0, pureHits, float64(pureHits)/float64(seqLen)*100.0)
-
 		hybridMean, hybridMedian := measurePerDomainCost(seq, func(domain string) bool {
 			hit, _ := hybrid.Match(domain)
 			return hit
@@ -99,6 +97,8 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 			return hit
 		})
 		totalCompile := compileHybrid + compilePure
+
+		runtime.GC()
 
 		// Benchmark hybrid matcher over the deterministic sequence.
 		b.Run(fmt.Sprintf("seq=%d/hybrid", seqLen), func(b *testing.B) {
@@ -121,6 +121,10 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 			}
 		})
 
+		runtime.GC()
+		runtime.GC()
+		runtime.GC()
+
 		// Benchmark pure DFA matcher over the deterministic sequence.
 		b.Run(fmt.Sprintf("seq=%d/pure", seqLen), func(b *testing.B) {
 			b.ReportAllocs()
@@ -142,13 +146,26 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 			}
 		})
 
+		runtime.GC()
+
+		fmt.Printf(
+			"\nBenchmarkSequenceMapVsDFA seq=%d hybrid_hits=%d(%.2f%%) pure_hits=%d(%.2f%%)\n",
+			seqLen,
+			hybridHits,
+			float64(hybridHits)/float64(seqLen)*100.0,
+			pureHits,
+			float64(pureHits)/float64(seqLen)*100.0,
+		)
+
 		// Combined measurement: report compile cost and per-domain lookup cost.
 		fmt.Printf(
-			"BenchmarkSequenceMapVsDFA seq=%d compile_hybrid=%s compile_pure=%s total_compile=%s hybrid_mean_ns_per_domain=%.2f hybrid_median_ns_per_domain=%.2f pure_mean_ns_per_domain=%.2f pure_median_ns_per_domain=%.2f\n",
-			seqLen,
+			"compile_hybrid = %s\ncompile_pure   = %s\ntotal_compile  = %s\n",
 			compileHybrid,
 			compilePure,
 			totalCompile,
+		)
+		fmt.Printf(
+			"hybrid: mean_per_domain = %.2fns median_per_domain = %.2fns\npure:   mean_per_domain = %.2fns median_per_domain = %.2fns\n\n",
 			hybridMean,
 			hybridMedian,
 			pureMean,
