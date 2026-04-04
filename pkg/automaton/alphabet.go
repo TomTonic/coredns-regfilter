@@ -4,11 +4,11 @@ package automaton
 // alphabet: the 26 lowercase letters (a-z), 10 digits (0-9), hyphen ('-'),
 // and dot ('.').
 //
-// Every [DFAState] transition array and every intermediate state during
+// Every runtime transition row and every intermediate state during
 // compilation is sized to exactly AlphabetSize slots, so changing this
 // constant reshapes the entire automaton. The value 38 keeps each
-// DFAState.Trans array at 38 pointers (304 bytes on 64-bit), which fits
-// comfortably inside a few cache lines.
+// transition row small and dense, which helps the DFA's flat tables remain
+// cache-friendly.
 const AlphabetSize = 38
 
 // noAlphabetIndex is the sentinel returned by [runeToIndex] for characters

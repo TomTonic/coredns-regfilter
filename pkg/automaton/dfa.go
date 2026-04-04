@@ -1,10 +1,5 @@
 package automaton
 
-import (
-	"runtime"
-	"sync"
-)
-
 // byteIndex maps ASCII byte values to alphabet indices for fast backward
 // iteration in [DFA.MatchDomain]. Using a 256-byte lookup table avoids the
 // switch ladder and rune conversion overhead of [runeToIndex] in the hot loop.
@@ -25,27 +20,6 @@ func init() {
 	}
 	byteIndex['-'] = 36
 	byteIndex['.'] = 37
-}
-
-// DFAState is one state in the compiled deterministic finite automaton.
-//
-// Transitions are stored in a fixed-size array indexed by [runeToIndex],
-// with nil entries indicating no transition (dead end). Each non-nil entry
-// is a direct pointer to the successor [DFAState] — no map lookups, no index
-// indirection, just a single pointer chase per input character at match time.
-//
-// # Memory Layout
-//
-// On 64-bit systems each DFAState is 38 pointers (304 B) for Trans, one bool
-// (Accept), and a slice header (RuleIDs). Keeping Trans as a fixed array
-// rather than a map or sparse structure ensures that the CPU prefetcher can
-// stride through transition lookups predictably. All states are allocated in
-// a single contiguous []DFAState slice inside [DFA], further improving spatial
-// locality.
-type DFAState struct {
-	Trans   [AlphabetSize]*DFAState
-	Accept  bool
-	RuleIDs []uint32 // which filter rules led to this accept state
 }
 
 type ruleSpan struct {
@@ -73,13 +47,8 @@ const transStateMask uint32 = transAcceptBit - 1
 // alphabet index, making [DFA.Match] and [DFA.MatchDomain] inherently
 // case-insensitive. Callers need not lowercase their input.
 //
-// The pointer-linked state graph is still materialized in [states] and
-// [start] for tests and diagnostics.
-//
 // Create a DFA with [Compile]; query it with [DFA.Match].
 type DFA struct {
-	start      *DFAState
-	states     []DFAState
 	startIndex int
 	trans      []uint32 // (acceptBit<<31) | targetStateIndex
 	accept     []bool
@@ -260,15 +229,10 @@ func (d *DFA) StateCount() int {
 // toDFA converts an intermediate DFA (used during compilation) to the
 // exported [DFA].
 //
-// The conversion allocates all [DFAState] values in a single contiguous slice
-// and patches transition entries to point directly into that slice. Once the
-// pointer-based representation is built, the flat transition table is
-// re-encoded in-place to store pre-multiplied base offsets
-// (targetState × [AlphabetSize]) with the accept flag in bit 31. This
-// encoding is consumed by [DFA.Match] and [DFA.MatchDomain] at runtime.
-//
-// For large state counts the patching work is distributed across goroutines,
-// where each goroutine processes a disjoint chunk of the state slice.
+// The conversion copies the flat transition table, accept flags, and rule ID
+// spans into the final runtime layout. Transition entries are then re-encoded
+// in-place so bit 31 carries the target state's accept flag. This encoding is
+// consumed directly by [DFA.Match] and [DFA.MatchDomain].
 func (md *intermediateDFA) toDFA() *DFA {
 	n := md.stateCount()
 	d := &DFA{
@@ -276,7 +240,6 @@ func (md *intermediateDFA) toDFA() *DFA {
 		trans:      make([]uint32, len(md.trans)),
 		accept:     make([]bool, len(md.accept)),
 		ruleSpans:  make([]ruleSpan, n),
-		states:     make([]DFAState, n),
 	}
 
 	if n == 0 {
@@ -302,52 +265,6 @@ func (md *intermediateDFA) toDFA() *DFA {
 		d.ruleIDData = append(d.ruleIDData, ids...)
 		d.ruleSpans[i] = ruleSpan{start: start, len: len(ids)}
 	}
-
-	// Build pointer-based state graph from raw state indices in d.trans.
-	numWorkers := runtime.GOMAXPROCS(0)
-
-	if n >= numWorkers*64 && numWorkers > 1 {
-		chunkSize := (n + numWorkers - 1) / numWorkers
-		var wg sync.WaitGroup
-		for w := range numWorkers {
-			lo := w * chunkSize
-			if lo >= n {
-				break
-			}
-			hi := min(lo+chunkSize, n)
-			wg.Add(1)
-			go func(lo, hi int) {
-				defer wg.Done()
-				for i := lo; i < hi; i++ {
-					ds := &d.states[i]
-					ds.Accept = d.accept[i]
-					ds.RuleIDs = d.ruleIDsForState(i)
-					trans := d.trans[i*AlphabetSize : (i+1)*AlphabetSize]
-					for idx, target := range trans {
-						if target != noTransitionState {
-							ds.Trans[idx] = &d.states[target]
-						}
-					}
-				}
-			}(lo, hi)
-		}
-		wg.Wait()
-	} else {
-		for i := range n {
-			d.states[i].Accept = d.accept[i]
-			d.states[i].RuleIDs = d.ruleIDsForState(i)
-		}
-		for i := range n {
-			trans := d.trans[i*AlphabetSize : (i+1)*AlphabetSize]
-			for idx, target := range trans {
-				if target != noTransitionState {
-					d.states[i].Trans[idx] = &d.states[target]
-				}
-			}
-		}
-	}
-
-	d.start = &d.states[d.startIndex]
 
 	// Re-encode d.trans in-place: set the accept bit (bit 31) for each
 	// transition whose target state is accepting. After this point d.trans

@@ -38,7 +38,6 @@
 //     index, making Match/MatchDomain inherently case-insensitive
 //   - Accept flags and rule IDs are split into dense side arrays for locality
 //   - [DFA.Match] and [DFA.MatchDomain] use byte-indexed hot loops
-//   - Exported [DFAState] values are still materialized for tests and diagnostics
 //   - NFA states use bit-packed flags to improve cache utilization
 //
 // # File Organization
@@ -47,7 +46,7 @@
 //   - nfa.go      — Thompson NFA types and ε-closure
 //   - subset.go   — powerset (subset) construction
 //   - minimize.go — Hopcroft partition-refinement minimization
-//   - dfa.go      — exported [DFA] / [DFAState] types, [DFA.Match] and [DFA.MatchDomain]
+//   - dfa.go      — exported [DFA] type, [DFA.Match] and [DFA.MatchDomain]
 //   - dot.go      — Graphviz DOT export ([DFA.DumpDot])
 //   - compile.go  — pipeline orchestration ([Compile])
 //
