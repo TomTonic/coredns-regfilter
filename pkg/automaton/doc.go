@@ -18,6 +18,17 @@
 //   - Wildcard: '*' matches zero or more DNS characters
 //   - Patterns are implicitly anchored (full match required)
 //
+// # Reversed-Pattern Domain Matching
+//
+// Callers that need ||domain^ anchoring semantics (matching a domain and all
+// of its subdomains) should store patterns in reversed form and query the DFA
+// through [DFA.MatchDomain] instead of [DFA.Match]. MatchDomain walks the
+// input name from right to left and records a hit whenever an accepting state
+// coincides with a DNS label boundary ('.' or start-of-name). This replaces
+// the older approach of generating synthetic "*.<pattern>" variants, which
+// caused exponential DFA state growth when the pattern already contained
+// wildcards.
+//
 // # Performance Design
 //
 // Every design choice in the exported [DFA] favors O(n) match-time performance:
@@ -25,6 +36,7 @@
 //   - All [DFAState] values live in one contiguous []DFAState slice
 //   - Direct pointer chasing replaces index indirection
 //   - NFA states use bit-packed flags to improve cache utilization
+//   - [DFA.MatchDomain] uses a byte-indexed lookup table for the hot loop
 //
 // # File Organization
 //
@@ -32,7 +44,7 @@
 //   - nfa.go      — Thompson NFA types and ε-closure
 //   - subset.go   — powerset (subset) construction
 //   - minimize.go — Hopcroft partition-refinement minimization
-//   - dfa.go      — exported [DFA] / [DFAState] types and [DFA.Match]
+//   - dfa.go      — exported [DFA] / [DFAState] types, [DFA.Match] and [DFA.MatchDomain]
 //   - dot.go      — Graphviz DOT export ([DFA.DumpDot])
 //   - compile.go  — pipeline orchestration ([Compile])
 //

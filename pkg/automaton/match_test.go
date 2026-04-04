@@ -606,6 +606,209 @@ func TestWildcardAtEnd(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// MatchDomain tests — reversed patterns with domain-boundary acceptance
+// ---------------------------------------------------------------------------
+
+// TestMatchDomainLiteral verifies that users get exact host blocking plus
+// subdomain matching through [DFA.MatchDomain] in the automaton package by
+// asserting that reversed literal patterns match the expected domain and its
+// subdomains at label boundaries.
+func TestMatchDomainLiteral(t *testing.T) {
+	// Pattern "ads.example.com" reversed
+	rules := []Pattern{
+		{Expr: "moc.elpmaxe.sda", RuleID: 1},
+	}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		input string
+		match bool
+	}{
+		{"ads.example.com", true},
+		{"sub.ads.example.com", true},
+		{"a.b.ads.example.com", true},
+		{"example.com", false},
+		{"badads.example.com", false},
+		{"notads.example.com", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		matched, _ := dfa.MatchDomain(tt.input)
+		if matched != tt.match {
+			t.Errorf("MatchDomain(%q) = %v, want %v", tt.input, matched, tt.match)
+		}
+	}
+}
+
+// TestMatchDomainWildcard verifies that users get wildcard plus subdomain
+// matching through [DFA.MatchDomain] in the automaton package by asserting
+// that reversed wildcard patterns match at domain boundaries.
+func TestMatchDomainWildcard(t *testing.T) {
+	// Pattern "*.ads.example.com" reversed = "moc.elpmaxe.sda.*"
+	rules := []Pattern{
+		{Expr: "moc.elpmaxe.sda.*", RuleID: 1},
+	}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		input string
+		match bool
+	}{
+		{"foo.ads.example.com", true},
+		{"bar.ads.example.com", true},
+		{".ads.example.com", true},
+		{"deep.sub.ads.example.com", true},
+		{"ads.example.com", false},
+		{"example.com", false},
+	}
+	for _, tt := range tests {
+		matched, _ := dfa.MatchDomain(tt.input)
+		if matched != tt.match {
+			t.Errorf("MatchDomain(%q) = %v, want %v", tt.input, matched, tt.match)
+		}
+	}
+}
+
+// TestMatchDomainWildcardMiddle verifies that users can match wildcard
+// segments inside labels with subdomain support via [DFA.MatchDomain] in the
+// automaton package.
+func TestMatchDomainWildcardMiddle(t *testing.T) {
+	// Pattern "ad*.example.com" reversed = "moc.elpmaxe.*da"
+	rules := []Pattern{
+		{Expr: "moc.elpmaxe.*da", RuleID: 1},
+	}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		input string
+		match bool
+	}{
+		{"ads.example.com", true},
+		{"ad1.example.com", true},
+		{"ad.example.com", true},
+		{"www.ads.example.com", true},  // subdomain of wildcard match
+		{"deep.ad2.example.com", true}, // deeper subdomain
+		{"example.com", false},
+		{"notads.example.com", false},
+		{"bad.example.com", false},
+	}
+	for _, tt := range tests {
+		matched, _ := dfa.MatchDomain(tt.input)
+		if matched != tt.match {
+			t.Errorf("MatchDomain(%q) = %v, want %v", tt.input, matched, tt.match)
+		}
+	}
+}
+
+// TestMatchDomainNilDFA verifies that a nil DFA is safe with MatchDomain.
+func TestMatchDomainNilDFA(t *testing.T) {
+	var dfa *DFA
+	matched, ruleIDs := dfa.MatchDomain("anything")
+	if matched {
+		t.Error("nil DFA should not match")
+	}
+	if ruleIDs != nil {
+		t.Error("nil DFA should return nil ruleIDs")
+	}
+}
+
+// TestMatchDomainRuleIDDedup verifies that [DFA.MatchDomain] does not produce
+// duplicate rule IDs when a pattern's accepting state is reached at multiple
+// domain boundaries.
+func TestMatchDomainRuleIDDedup(t *testing.T) {
+	// Pattern "*" reversed = "*" — matches everything, accepting at every boundary
+	rules := []Pattern{{Expr: "*", RuleID: 42}}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	matched, ruleIDs := dfa.MatchDomain("a.b.example.com")
+	if !matched {
+		t.Fatal("expected match for catch-all wildcard")
+	}
+	if len(ruleIDs) != 1 || ruleIDs[0] != 42 {
+		t.Errorf("ruleIDs = %v, want [42] (no duplicates)", ruleIDs)
+	}
+}
+
+// TestMatchDomainMultiplePatterns verifies that [DFA.MatchDomain] collects
+// rule IDs from multiple accepting patterns at different boundary positions.
+func TestMatchDomainMultiplePatterns(t *testing.T) {
+	// "example.com" reversed + "ads.example.com" reversed
+	rules := []Pattern{
+		{Expr: "moc.elpmaxe", RuleID: 0},
+		{Expr: "moc.elpmaxe.sda", RuleID: 1},
+	}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Input matches both patterns (subdomain of both)
+	matched, ruleIDs := dfa.MatchDomain("sub.ads.example.com")
+	if !matched {
+		t.Fatal("expected match")
+	}
+	if len(ruleIDs) != 2 {
+		t.Fatalf("expected 2 ruleIDs, got %d: %v", len(ruleIDs), ruleIDs)
+	}
+}
+
+// TestMatchDomainEmptyInput verifies that [DFA.MatchDomain] handles empty
+// input correctly with patterns that match empty strings.
+func TestMatchDomainEmptyInput(t *testing.T) {
+	// Pattern "*" matches empty string
+	rules := []Pattern{{Expr: "*", RuleID: 1}}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	matched, _ := dfa.MatchDomain("")
+	if !matched {
+		t.Error("wildcard should match empty input via MatchDomain")
+	}
+
+	// Non-empty pattern should NOT match empty input
+	rules2 := []Pattern{{Expr: "moc.elpmaxe"}}
+	dfa2, err := Compile(rules2, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched2, _ := dfa2.MatchDomain("")
+	if matched2 {
+		t.Error("non-empty pattern should not match empty input")
+	}
+}
+
+// TestMatchDomainNonDNSCharacters verifies that MatchDomain returns early on
+// invalid DNS characters.
+func TestMatchDomainNonDNSCharacters(t *testing.T) {
+	rules := []Pattern{{Expr: "moc.elpmaxe"}}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, input := range []string{"EXAMPLE.COM", "example.com/path", "exämple.com"} {
+		matched, _ := dfa.MatchDomain(input)
+		if matched {
+			t.Errorf("MatchDomain(%q) should not match (non-DNS input)", input)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Benchmarks
 // ---------------------------------------------------------------------------
 
@@ -659,4 +862,66 @@ func BenchmarkMatchLargeAutomaton(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		dfa.Match(names[i%len(names)])
 	}
+}
+
+func BenchmarkMatchDomain(b *testing.B) {
+	// Reversed patterns matching the same logical rules as BenchmarkMatch
+	rules := []Pattern{
+		{Expr: reverse("ads.example.com"), RuleID: 1},
+		{Expr: reverse("tracker.example.com")},
+		{Expr: reverse("*.ad.doubleclick.net")},
+		{Expr: reverse("malware.example.org")},
+		{Expr: reverse("*.analytics.google.com")},
+	}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	names := []string{
+		"ads.example.com",
+		"safe.example.com",
+		"foo.ad.doubleclick.net",
+		"www.google.com",
+		"sub.analytics.google.com",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dfa.MatchDomain(names[i%len(names)])
+	}
+}
+
+func BenchmarkMatchDomainLargeAutomaton(b *testing.B) {
+	const n = 5000
+	rules := make([]Pattern, n)
+	for i := range n {
+		rules[i] = Pattern{Expr: reverse(fmt.Sprintf("host%d.example.com", i)), RuleID: uint32(i)}
+	}
+	dfa, err := Compile(rules, CompileOptions{})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	names := []string{
+		"host0.example.com",
+		"host2500.example.com",
+		"host4999.example.com",
+		"nothere.example.com",
+		"www.google.com",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dfa.MatchDomain(names[i%len(names)])
+	}
+}
+
+// reverse returns s with its bytes in reverse order (ASCII only).
+func reverse(s string) string {
+	b := []byte(s)
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+	return string(b)
 }
