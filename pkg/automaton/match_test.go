@@ -41,27 +41,33 @@ func TestMatchLiteral(t *testing.T) {
 	}
 }
 
-// TestDFAStateCanHaveMultipleOutgoingEdges verifies that users compiling rules
-// with different next characters still get all matches in the automaton package
-// after subset construction and minimization.
+// TestDFACanMatchDistinctSingleLabelRules verifies that users compiling rules
+// with different next characters still get all expected matches in the
+// automaton package after subset construction and minimization.
 //
-// This test covers the exported DFA transition layout.
+// This test covers the productive DFA matching path.
 //
-// It asserts that one DFA state can expose multiple outgoing transitions, which
-// is why the DFA keeps its dense per-alphabet transition array.
-func TestDFAStateCanHaveMultipleOutgoingEdges(t *testing.T) {
+// It asserts that two one-label rules remain independently reachable through
+// [DFA.Match] without relying on internal state layout.
+func TestDFACanMatchDistinctSingleLabelRules(t *testing.T) {
 	dfa, err := Compile([]Pattern{{Expr: "a", RuleID: 1}, {Expr: "b", RuleID: 2}}, CompileOptions{})
 	if err != nil {
 		t.Fatalf("Compile(): %v", err)
 	}
 
-	aNext := dfa.start.Trans[runeToIndex('a')]
-	bNext := dfa.start.Trans[runeToIndex('b')]
-	if aNext == nil || bNext == nil {
-		t.Fatalf("expected start state to have outgoing edges for both 'a' and 'b'")
-	}
-	if aNext == bNext {
-		t.Fatalf("expected distinct DFA targets for 'a' and 'b'")
+	for _, tc := range []struct {
+		input string
+		want  bool
+	}{
+		{input: "a", want: true},
+		{input: "b", want: true},
+		{input: "c", want: false},
+		{input: "ab", want: false},
+	} {
+		matched, _ := dfa.Match(tc.input)
+		if matched != tc.want {
+			t.Errorf("Match(%q) = %v, want %v", tc.input, matched, tc.want)
+		}
 	}
 }
 
