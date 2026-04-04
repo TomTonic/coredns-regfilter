@@ -41,6 +41,7 @@ guidance** than a pure specification:
    Mention typical call sites, related functions, or common patterns.
 5. **Example** (optional but encouraged): A short inline example or
    reference to a testable example (`Example*` function).
+6. Use **English** language.
 
 Example:
 

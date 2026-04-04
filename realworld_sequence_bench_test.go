@@ -5,26 +5,24 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/TomTonic/filterlist/pkg/automaton"
 	"github.com/TomTonic/filterlist/pkg/matcher"
 	"github.com/TomTonic/rtcompare"
 )
 
-var benchmarkMatchCount int
-
 // BenchmarkSequenceMapVsDFA compiles the realistic denylist rule set and then
 // benchmarks matching a deterministic pseudo-random sequence of domains drawn
 // from the provided Cloudflare CSV. It reports separate benchmark runs for the
-// hybrid suffix-map+DFA matcher and for a pure-automaton matcher.
+// matcher package in hybrid mode and in full-DFA mode.
 //
 // Sequence sizes can be controlled with the environment variable
 // BENCH_SEQ_SIZE (single integer). If unset, the benchmark runs a small set of
@@ -37,183 +35,168 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 	domains := loadDomainsFromCSV(b, csvPath)
 
 	// Allow overriding a single sequence size via env var.
-	sizes := []int{2_000, 20_000, 200_000}
+	sizes := []int{50_000, 100_000, 200_000}
 	if v := os.Getenv("BENCH_SEQ_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			sizes = []int{n}
 		}
 	}
 
-	// Compile hybrid matcher (suffix map + DFA) and measure time.
-	b.Logf("compiling hybrid matcher (rules -> suffixmap + dfa)")
+	// Compile hybrid matcher and measure time.
+	b.Logf("compiling matcher in hybrid mode")
 	t0 := time.Now()
 	rules := loadRealisticDenylistRules(b)
-	hybrid, err := matcher.CompileRules(rules, matcher.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
+	hybrid, err := matcher.CompileRules(rules, matcher.CompileOptions{
+		MaxStates: realisticBenchmarkMaxStates,
+		Mode:      matcher.ModeHybrid,
+	})
 	if err != nil {
 		b.Fatalf("CompileRules error: %v", err)
 	}
 	compileHybrid := time.Since(t0)
 
-	// Compile pure automaton (force all patterns through automaton) and measure.
-	b.Logf("compiling pure automaton (all patterns through automaton)")
+	// Compile matcher in full-DFA mode and measure time.
+	b.Logf("compiling matcher in dfa mode")
 	t1 := time.Now()
-	patterns := loadRealisticDenylistPatterns(b)
-	pure, err := automaton.Compile(patterns, automaton.CompileOptions{MaxStates: realisticBenchmarkMaxStates})
+	pure, err := matcher.CompileRules(rules, matcher.CompileOptions{
+		MaxStates: realisticBenchmarkMaxStates,
+		Mode:      matcher.ModeDFA,
+	})
 	if err != nil {
-		b.Fatalf("automaton.Compile error: %v", err)
+		b.Fatalf("CompileRules error: %v", err)
 	}
 	compilePure := time.Since(t1)
+	totalCompile := compileHybrid + compilePure
 
 	b.Logf("compile: hybrid=%s pure=%s", compileHybrid, compilePure)
 
-	// For each configured sequence size build a deterministic sequence using DPRNG.
+	timesHybrid := make([]float64, 0, 100_000)
+	timesPure := make([]float64, 0, 100_000)
+	oldGCPercent := debug.SetGCPercent(-1) // Disable GC during benchmarking to avoid noise; we'll trigger manually between runs.
+	defer debug.SetGCPercent(oldGCPercent)
+
 	for _, seqLen := range sizes {
-		// Build deterministic sequence (not timed).
-		dprng := rtcompare.NewDPRNG(uint64(seqLen * 123456789)) // Seed based on length for reproducibility across runs.
-		seq := make([]string, 0, seqLen)
-		for i := 0; i < seqLen; i++ {
-			idx := dprng.UInt32N(uint32(len(domains)))
-			seq = append(seq, domains[int(idx)])
+		timesHybrid = timesHybrid[:0]
+		timesPure = timesPure[:0]
+
+		if seqLen <= 0 {
+			b.Fatalf("sequence length must be positive, got %d", seqLen)
+		}
+		if len(domains) > math.MaxUint32 {
+			b.Fatalf("domain count %d exceeds DPRNG limit", len(domains))
 		}
 
-		// Pre-warm: compute match counts once (not timed) to report hit rates.
 		hybridHits := 0
+		hybridMatches := 0
 		pureHits := 0
-		for _, d := range seq {
-			if hit, _ := hybrid.Match(d); hit {
-				hybridHits++
-			}
-			if hit, _ := pure.Match(d); hit {
-				pureHits++
-			}
-		}
+		pureMatches := 0
+		seed := uint64(seqLen)*123456789 + 11 //nolint:gosec // seqLen is validated > 0 just above and only used in benchmark seeding
+		domainCount := uint32(len(domains))   //nolint:gosec // len(domains) is bounded against math.MaxUint32 just above
 
-		b.Logf("seq=%d hybrid_hits=%d(%.2f%%) pure_hits=%d(%.2f%%)", seqLen, hybridHits, float64(hybridHits)/float64(seqLen)*100.0, pureHits, float64(pureHits)/float64(seqLen)*100.0)
-
-		hybridMean, hybridMedian := measurePerDomainCost(seq, func(domain string) bool {
-			hit, _ := hybrid.Match(domain)
-			return hit
-		})
-		pureMean, pureMedian := measurePerDomainCost(seq, func(domain string) bool {
-			hit, _ := pure.Match(domain)
-			return hit
-		})
-		totalCompile := compileHybrid + compilePure
+		runtime.GC()
+		runtime.GC()
+		runtime.GC()
+		debug.SetGCPercent(-1)
 
 		// Benchmark hybrid matcher over the deterministic sequence.
 		b.Run(fmt.Sprintf("seq=%d/hybrid", seqLen), func(b *testing.B) {
 			b.ReportAllocs()
-			b.ReportMetric(float64(seqLen), "domains")
-			b.ReportMetric(float64(hybridHits)/float64(seqLen)*100.0, "hit_rate_pct")
-			b.ReportMetric(float64(compileHybrid.Nanoseconds()), "compile_ns")
-			b.ReportMetric(float64(totalCompile.Nanoseconds()), "total_compile_ns")
-			b.ReportMetric(hybridMean, "mean_ns/domain")
-			b.ReportMetric(hybridMedian, "median_ns/domain")
+			dprng := rtcompare.NewDPRNG(seed) // DPRNG is deterministic in sequence and has constant memory and execution time
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				matches := 0
-				for _, d := range seq {
+				t1 := rtcompare.SampleTime()
+				for range seqLen {
+					idx := dprng.UInt32N(domainCount)
+					d := domains[int(idx)]
 					if hit, _ := hybrid.Match(d); hit {
-						matches++
+						hybridHits++
 					}
+					hybridMatches++
 				}
-				benchmarkMatchCount = matches
+				t2 := rtcompare.SampleTime()
+				timesHybrid = append(timesHybrid, float64(rtcompare.DiffTimeStamps(t1, t2))/float64(seqLen))
 			}
 		})
 
-		// Benchmark pure DFA matcher over the deterministic sequence.
+		debug.SetGCPercent(oldGCPercent)
+		runtime.GC()
+		runtime.GC()
+		runtime.GC()
+		debug.SetGCPercent(-1)
+
+		// Benchmark matcher in full-DFA mode over the deterministic sequence.
 		b.Run(fmt.Sprintf("seq=%d/pure", seqLen), func(b *testing.B) {
 			b.ReportAllocs()
-			b.ReportMetric(float64(seqLen), "domains")
-			b.ReportMetric(float64(pureHits)/float64(seqLen)*100.0, "hit_rate_pct")
-			b.ReportMetric(float64(compilePure.Nanoseconds()), "compile_ns")
-			b.ReportMetric(float64(totalCompile.Nanoseconds()), "total_compile_ns")
-			b.ReportMetric(pureMean, "mean_ns/domain")
-			b.ReportMetric(pureMedian, "median_ns/domain")
+			dprng := rtcompare.NewDPRNG(seed) // DPRNG is deterministic in sequence and has constant memory and execution time
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				matches := 0
-				for _, d := range seq {
+				t1 := rtcompare.SampleTime()
+				for range seqLen {
+					idx := dprng.UInt32N(domainCount)
+					d := domains[int(idx)]
 					if hit, _ := pure.Match(d); hit {
-						matches++
+						pureHits++
 					}
+					pureMatches++
 				}
-				benchmarkMatchCount = matches
+				t2 := rtcompare.SampleTime()
+				timesPure = append(timesPure, float64(rtcompare.DiffTimeStamps(t1, t2))/float64(seqLen))
 			}
 		})
+
+		debug.SetGCPercent(oldGCPercent)
+		runtime.GC()
+
+		hybridMedian := rtcompare.QuickMedian(timesHybrid)
+		pureMedian := rtcompare.QuickMedian(timesPure)
+
+		fmt.Printf(
+			"\nBenchmarkSequenceMapVsDFA seq = %d, hybrid: %d iterations, pure: %d iterations\n",
+			seqLen,
+			hybridMatches,
+			pureMatches,
+		)
 
 		// Combined measurement: report compile cost and per-domain lookup cost.
 		fmt.Printf(
-			"BenchmarkSequenceMapVsDFA seq=%d compile_hybrid=%s compile_pure=%s total_compile=%s hybrid_mean_ns_per_domain=%.2f hybrid_median_ns_per_domain=%.2f pure_mean_ns_per_domain=%.2f pure_median_ns_per_domain=%.2f\n",
-			seqLen,
+			"compile_hybrid = %s\ncompile_pure   = %s\ntotal_compile  = %s\n",
 			compileHybrid,
 			compilePure,
 			totalCompile,
-			hybridMean,
+		)
+
+		fmt.Printf(
+			"hybrid: median_per_domain = %.2fns\npure:   median_per_domain = %.2fns\n\n",
 			hybridMedian,
-			pureMean,
 			pureMedian,
 		)
-	}
-}
 
-func measurePerDomainCost(seq []string, match func(string) bool) (meanNS, medianNS float64) {
-	const samples = 9
-
-	perDomain := make([]float64, 0, samples)
-	for range samples {
-		matches := 0
-		start := time.Now()
-		for _, domain := range seq {
-			if match(domain) {
-				matches++
-			}
+		// Compare distributions using bootstrap (precision controls bootstrap repetitions)
+		speedups := []float64{0.05} // assume 5% speedup
+		results, err := rtcompare.CompareSamplesDefault(timesPure, timesHybrid, speedups)
+		if err != nil {
+			panic(err)
 		}
-		elapsed := time.Since(start)
-		benchmarkMatchCount = matches
-		perDomain = append(perDomain, float64(elapsed.Nanoseconds())/float64(len(seq)))
+		for _, r := range results {
+			fmt.Printf("Speedup ≥ %.0f%% → Confidence %.2f%%\n", r.RelativeSpeedupSampleAvsSampleB*100, r.Confidence*100)
+		}
 	}
-
-	meanNS = meanFloat64(perDomain)
-	medianNS = medianFloat64(perDomain)
-	return meanNS, medianNS
-}
-
-func meanFloat64(values []float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-
-	var total float64
-	for _, value := range values {
-		total += value
-	}
-	return total / float64(len(values))
-}
-
-func medianFloat64(values []float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-
-	sorted := append([]float64(nil), values...)
-	sort.Float64s(sorted)
-	middle := len(sorted) / 2
-	if len(sorted)%2 == 1 {
-		return sorted[middle]
-	}
-	return (sorted[middle-1] + sorted[middle]) / 2
 }
 
 // loadDomainsFromCSV reads the first column from a CSV and returns a slice of
 // domain names. It skips an initial header row if present.
 func loadDomainsFromCSV(tb testing.TB, path string) []string {
 	tb.Helper()
-	f, err := os.Open(path)
+	cleanPath := filepath.Clean(path)
+	f, err := os.Open(cleanPath) //nolint:gosec // benchmark fixture path is derived from runtime.Caller and cleaned locally
 	if err != nil {
-		tb.Skipf("CSV file not found (%s): %v", path, err)
+		tb.Skipf("CSV file not found (%s): %v", cleanPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			tb.Fatalf("close csv %s: %v", cleanPath, closeErr)
+		}
+	}()
 
 	// Use the csv.Reader for robust parsing; stream rows to avoid large
 	// temporary allocations for huge files.
@@ -247,7 +230,7 @@ func loadDomainsFromCSV(tb testing.TB, path string) []string {
 	}
 
 	if len(domains) == 0 {
-		tb.Skipf("no domains found in CSV %s", path)
+		tb.Skipf("no domains found in CSV %s", cleanPath)
 	}
 	return domains
 }
