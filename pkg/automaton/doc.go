@@ -9,7 +9,7 @@
 //  2. NFA combination — individual NFAs merge via epsilon fan-out (nfa.go)
 //  3. Subset (powerset) construction — NFA → deterministic DFA (subset.go)
 //  4. Hopcroft minimization — merge equivalent DFA states (minimize.go)
-//  5. Pointer-based DFA — contiguous-slice DFA with direct pointers (dfa.go)
+//  5. Runtime DFA — compact transition tables plus exported state graph (dfa.go)
 //
 // # Pattern Language
 //
@@ -18,12 +18,26 @@
 //   - Wildcard: '*' matches zero or more DNS characters
 //   - Patterns are implicitly anchored (full match required)
 //
+// # Reversed-Pattern Domain Matching
+//
+// Callers that need ||domain^ anchoring semantics (matching a domain and all
+// of its subdomains) should store patterns in reversed form and query the DFA
+// through [DFA.MatchDomain] instead of [DFA.Match]. MatchDomain walks the
+// input name from right to left and records a hit whenever an accepting state
+// coincides with a DNS label boundary ('.' or start-of-name). This replaces
+// the older approach of generating synthetic "*.<pattern>" variants, which
+// caused exponential DFA state growth when the pattern already contained
+// wildcards.
+//
 // # Performance Design
 //
-// Every design choice in the exported [DFA] favors O(n) match-time performance:
-//   - Transitions are [AlphabetSize]*DFAState fixed arrays (no map lookups)
-//   - All [DFAState] values live in one contiguous []DFAState slice
-//   - Direct pointer chasing replaces index indirection
+// Every design choice in the runtime [DFA] favors O(n) match-time performance:
+//   - Transition entries embed the target's accept flag in bit 31, avoiding
+//     a separate accept-array load at domain-boundary positions
+//   - [byteIndex] maps both upper- and lowercase ASCII letters to the same
+//     index, making Match/MatchDomain inherently case-insensitive
+//   - Accept flags and rule IDs are split into dense side arrays for locality
+//   - [DFA.Match] and [DFA.MatchDomain] use byte-indexed hot loops
 //   - NFA states use bit-packed flags to improve cache utilization
 //
 // # File Organization
@@ -32,7 +46,7 @@
 //   - nfa.go      — Thompson NFA types and ε-closure
 //   - subset.go   — powerset (subset) construction
 //   - minimize.go — Hopcroft partition-refinement minimization
-//   - dfa.go      — exported [DFA] / [DFAState] types and [DFA.Match]
+//   - dfa.go      — exported [DFA] type, [DFA.Match] and [DFA.MatchDomain]
 //   - dot.go      — Graphviz DOT export ([DFA.DumpDot])
 //   - compile.go  — pipeline orchestration ([Compile])
 //
