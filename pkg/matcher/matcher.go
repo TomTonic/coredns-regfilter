@@ -40,7 +40,7 @@ import (
 // Logger receives progress messages during compilation.
 // Callers typically pass their watcher or plugin logger here.
 type Logger interface {
-	Infof(format string, args ...interface{})
+	Infof(format string, args ...any)
 }
 
 // Mode selects how the matcher represents parsed rules at runtime.
