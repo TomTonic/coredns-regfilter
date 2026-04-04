@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,7 +36,7 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 	domains := loadDomainsFromCSV(b, csvPath)
 
 	// Allow overriding a single sequence size via env var.
-	sizes := []int{25_000, 50_000, 100_000}
+	sizes := []int{50_000, 100_000, 200_000}
 	if v := os.Getenv("BENCH_SEQ_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			sizes = []int{n}
@@ -63,61 +62,46 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 		b.Fatalf("automaton.Compile error: %v", err)
 	}
 	compilePure := time.Since(t1)
+	totalCompile := compileHybrid + compilePure
 
 	b.Logf("compile: hybrid=%s pure=%s", compileHybrid, compilePure)
 
-	// For each configured sequence size build a deterministic sequence using DPRNG.
+	timesHybrid := make([]float64, 0, 1_000_000)
+	timesPure := make([]float64, 0, 1_000_000)
+	//oldGCPercent := debug.SetGCPercent(-1) // Disable GC during benchmarking to avoid noise; we'll trigger manually between runs.
+	// defer debug.SetGCPercent(oldGCPercent)
+
 	for _, seqLen := range sizes {
-		// Build deterministic sequence (not timed).
-		dprng := rtcompare.NewDPRNG(uint64(seqLen * 123456789)) // Seed based on length for reproducibility across runs.
-		seq := make([]string, 0, seqLen)
-		for i := 0; i < seqLen; i++ {
-			idx := dprng.UInt32N(uint32(len(domains)))
-			seq = append(seq, domains[int(idx)])
-		}
+		timesHybrid = timesHybrid[:0]
+		timesPure = timesPure[:0]
 
-		// Pre-warm: compute match counts once (not timed) to report hit rates.
 		hybridHits := 0
+		hybridMatches := 0
 		pureHits := 0
-		for _, d := range seq {
-			if hit, _ := hybrid.Match(d); hit {
-				hybridHits++
-			}
-			if hit, _ := pure.Match(d); hit {
-				pureHits++
-			}
-		}
+		pureMatches := 0
+		seed := uint64(seqLen*123456789 + 11) // Seed based on length for reproducibility across runs.
 
-		hybridMean, hybridMedian := measurePerDomainCost(seq, func(domain string) bool {
-			hit, _ := hybrid.Match(domain)
-			return hit
-		})
-		pureMean, pureMedian := measurePerDomainCost(seq, func(domain string) bool {
-			hit, _ := pure.Match(domain)
-			return hit
-		})
-		totalCompile := compileHybrid + compilePure
-
+		runtime.GC()
+		runtime.GC()
 		runtime.GC()
 
 		// Benchmark hybrid matcher over the deterministic sequence.
 		b.Run(fmt.Sprintf("seq=%d/hybrid", seqLen), func(b *testing.B) {
 			b.ReportAllocs()
-			b.ReportMetric(float64(seqLen), "domains")
-			b.ReportMetric(float64(hybridHits)/float64(seqLen)*100.0, "hit_rate_pct")
-			b.ReportMetric(float64(compileHybrid.Nanoseconds()), "compile_ns")
-			b.ReportMetric(float64(totalCompile.Nanoseconds()), "total_compile_ns")
-			b.ReportMetric(hybridMean, "mean_ns/domain")
-			b.ReportMetric(hybridMedian, "median_ns/domain")
+			dprng := rtcompare.NewDPRNG(seed) // DPRNG is deterministic in sequence and has constant memory and execution time
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				matches := 0
-				for _, d := range seq {
+				t1 := rtcompare.SampleTime()
+				for range seqLen {
+					idx := dprng.UInt32N(uint32(len(domains)))
+					d := domains[int(idx)]
 					if hit, _ := hybrid.Match(d); hit {
-						matches++
+						hybridHits++
 					}
+					hybridMatches++
 				}
-				benchmarkMatchCount = matches
+				t2 := rtcompare.SampleTime()
+				timesHybrid = append(timesHybrid, float64(rtcompare.DiffTimeStamps(t1, t2))/float64(seqLen))
 			}
 		})
 
@@ -128,33 +112,33 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 		// Benchmark pure DFA matcher over the deterministic sequence.
 		b.Run(fmt.Sprintf("seq=%d/pure", seqLen), func(b *testing.B) {
 			b.ReportAllocs()
-			b.ReportMetric(float64(seqLen), "domains")
-			b.ReportMetric(float64(pureHits)/float64(seqLen)*100.0, "hit_rate_pct")
-			b.ReportMetric(float64(compilePure.Nanoseconds()), "compile_ns")
-			b.ReportMetric(float64(totalCompile.Nanoseconds()), "total_compile_ns")
-			b.ReportMetric(pureMean, "mean_ns/domain")
-			b.ReportMetric(pureMedian, "median_ns/domain")
+			dprng := rtcompare.NewDPRNG(seed) // DPRNG is deterministic in sequence and has constant memory and execution time
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				matches := 0
-				for _, d := range seq {
+				t1 := rtcompare.SampleTime()
+				for range seqLen {
+					idx := dprng.UInt32N(uint32(len(domains)))
+					d := domains[int(idx)]
 					if hit, _ := pure.Match(d); hit {
-						matches++
+						pureHits++
 					}
+					pureMatches++
 				}
-				benchmarkMatchCount = matches
+				t2 := rtcompare.SampleTime()
+				timesPure = append(timesPure, float64(rtcompare.DiffTimeStamps(t1, t2))/float64(seqLen))
 			}
 		})
 
 		runtime.GC()
 
+		hybridMedian := rtcompare.QuickMedian(timesHybrid)
+		pureMedian := rtcompare.QuickMedian(timesPure)
+
 		fmt.Printf(
-			"\nBenchmarkSequenceMapVsDFA seq=%d hybrid_hits=%d(%.2f%%) pure_hits=%d(%.2f%%)\n",
+			"\nBenchmarkSequenceMapVsDFA seq = %d, hybrid: %d iterations, pure: %d iterations\n",
 			seqLen,
-			hybridHits,
-			float64(hybridHits)/float64(seqLen)*100.0,
-			pureHits,
-			float64(pureHits)/float64(seqLen)*100.0,
+			hybridMatches,
+			pureMatches,
 		)
 
 		// Combined measurement: report compile cost and per-domain lookup cost.
@@ -164,62 +148,13 @@ func BenchmarkSequenceMapVsDFA(b *testing.B) {
 			compilePure,
 			totalCompile,
 		)
+
 		fmt.Printf(
-			"hybrid: mean_per_domain = %.2fns median_per_domain = %.2fns\npure:   mean_per_domain = %.2fns median_per_domain = %.2fns\n\n",
-			hybridMean,
+			"hybrid: median_per_domain = %.2fns\npure:   median_per_domain = %.2fns\n\n",
 			hybridMedian,
-			pureMean,
 			pureMedian,
 		)
 	}
-}
-
-func measurePerDomainCost(seq []string, match func(string) bool) (meanNS, medianNS float64) {
-	const samples = 9
-
-	perDomain := make([]float64, 0, samples)
-	for range samples {
-		matches := 0
-		start := time.Now()
-		for _, domain := range seq {
-			if match(domain) {
-				matches++
-			}
-		}
-		elapsed := time.Since(start)
-		benchmarkMatchCount = matches
-		perDomain = append(perDomain, float64(elapsed.Nanoseconds())/float64(len(seq)))
-	}
-
-	meanNS = meanFloat64(perDomain)
-	medianNS = medianFloat64(perDomain)
-	return meanNS, medianNS
-}
-
-func meanFloat64(values []float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-
-	var total float64
-	for _, value := range values {
-		total += value
-	}
-	return total / float64(len(values))
-}
-
-func medianFloat64(values []float64) float64 {
-	if len(values) == 0 {
-		return 0
-	}
-
-	sorted := append([]float64(nil), values...)
-	sort.Float64s(sorted)
-	middle := len(sorted) / 2
-	if len(sorted)%2 == 1 {
-		return sorted[middle]
-	}
-	return (sorted[middle-1] + sorted[middle]) / 2
 }
 
 // loadDomainsFromCSV reads the first column from a CSV and returns a slice of
