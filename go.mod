@@ -10,7 +10,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
-	golang.org/x/net v0.54.0
+	golang.org/x/net v0.55.0
 )
 
 require (
@@ -32,7 +32,7 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260511170946-3700d4141b60 // indirect
