@@ -1,6 +1,6 @@
 module github.com/TomTonic/filterlist
 
-go 1.25.10
+go 1.25.11
 
 require (
 	github.com/TomTonic/rtcompare v0.5.2
@@ -23,16 +23,15 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/pires/go-proxyproto v0.12.0 // indirect
-	github.com/prometheus/common v0.67.5 // indirect
+	github.com/prometheus/common v0.68.1 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/quic-go/quic-go v0.59.1 // indirect
+	github.com/quic-go/quic-go v0.60.0 // indirect
 	go.uber.org/mock v0.6.0 // indirect
-	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
