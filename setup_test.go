@@ -12,6 +12,67 @@ import (
 	"github.com/TomTonic/filterlist/pkg/matcher"
 )
 
+// TestConfigWarnings verifies that operators are alerted to valid-but-risky
+// configurations before the plugin starts serving, so they do not silently run
+// with an uncapped matcher or a block-everything policy.
+//
+// This test covers the configWarnings helper that setup logs after parsing.
+//
+// It asserts that each risky setting produces exactly one warning, that a
+// well-formed config produces none, and that an allowlist directory suppresses
+// the deny_non_allowlisted warning.
+func TestConfigWarnings(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       Config
+		wantCount int
+		wantMatch string
+	}{
+		{
+			name:      "no warnings for safe config",
+			cfg:       Config{MaxStates: 1000, DenylistDir: "/deny"},
+			wantCount: 0,
+		},
+		{
+			name:      "warns on uncapped max_states",
+			cfg:       Config{MaxStates: 0, DenylistDir: "/deny"},
+			wantCount: 1,
+			wantMatch: "max_states=0",
+		},
+		{
+			name:      "warns on deny_non_allowlisted without allowlist",
+			cfg:       Config{MaxStates: 1000, DenyNonAllowlisted: true},
+			wantCount: 1,
+			wantMatch: "every query will be blocked",
+		},
+		{
+			name:      "no deny_non_allowlisted warning when allowlist is set",
+			cfg:       Config{MaxStates: 1000, DenyNonAllowlisted: true, AllowlistDir: "/allow"},
+			wantCount: 0,
+		},
+		{
+			name:      "warns on both risky settings at once",
+			cfg:       Config{MaxStates: 0, DenyNonAllowlisted: true},
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warnings := configWarnings(&tt.cfg)
+			if len(warnings) != tt.wantCount {
+				t.Fatalf("configWarnings returned %d warnings, want %d: %v", len(warnings), tt.wantCount, warnings)
+			}
+			if tt.wantMatch != "" {
+				joined := strings.Join(warnings, "\n")
+				if !strings.Contains(joined, tt.wantMatch) {
+					t.Errorf("warnings %q do not contain %q", joined, tt.wantMatch)
+				}
+			}
+		})
+	}
+}
+
 type namedHandler struct{ name string }
 
 func (h namedHandler) ServeDNS(context.Context, dns.ResponseWriter, *dns.Msg) (int, error) {

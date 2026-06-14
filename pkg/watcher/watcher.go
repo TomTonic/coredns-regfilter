@@ -332,8 +332,16 @@ func (w *dirWatcher) tryAddWatch(dir string) {
 	// rebuild so any pre-existing files are picked up even if no create
 	// event is emitted. We only do this when recovering from a pending
 	// error to avoid racing the initial synchronous compile done in Start.
+	//
+	// The goroutine is tracked in wg and checks the context so that stop()
+	// waits for it and it does not publish a stale snapshot after shutdown.
 	if wasPending {
+		w.wg.Add(1)
 		go func() {
+			defer w.wg.Done()
+			if w.ctx.Err() != nil {
+				return
+			}
 			if filepath.Clean(w.cfg.AllowlistDir) == clean {
 				w.rebuild("allowlist")
 				return

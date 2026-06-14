@@ -87,14 +87,21 @@ type Plugin struct {
 	Config  Config
 	metrics *metrics.Registry
 
-	allowlist  atomic.Value // *matcher.Matcher
-	denylist   atomic.Value // *matcher.Matcher
-	alSources  atomic.Value // []string
-	dlSources  atomic.Value // []string
-	alPatterns atomic.Value // []string
-	dlPatterns atomic.Value // []string
+	allowlist atomic.Value // listState
+	denylist  atomic.Value // listState
 
 	stopWatcher func() error
+}
+
+// listState is one immutable, atomically-published view of a compiled filter
+// list. Bundling the matcher with its rule sources and patterns guarantees that
+// a reader sees a single consistent snapshot: the rule IDs produced by matcher
+// always index into the sources and patterns slices captured at the same
+// compile, even if a reload swaps in a new state concurrently.
+type listState struct {
+	matcher  *matcher.Matcher
+	sources  []string // rule source strings indexed by rule ID
+	patterns []string // rule pattern strings indexed by rule ID
 }
 
 // Name reports the CoreDNS plugin name used for error wrapping and chaining.
@@ -106,37 +113,60 @@ func (rf *Plugin) Name() string { return "filterlist" }
 // SetAllowlist atomically installs m as the active allowlist matcher.
 //
 // The m parameter may be nil to clear the allowlist after a successful reload
-// that produced no allow rules. Callers normally use this from watcher update
-// callbacks rather than directly from the DNS hot path.
+// that produced no allow rules. It clears any previously stored debug source
+// and pattern metadata; use setAllowlist to publish a matcher together with its
+// metadata. Callers normally use this from watcher update callbacks rather than
+// directly from the DNS hot path.
 func (rf *Plugin) SetAllowlist(m *matcher.Matcher) {
-	rf.allowlist.Store(m)
+	rf.setAllowlist(m, nil, nil)
 }
 
 // SetDenylist atomically installs m as the active denylist matcher.
 //
 // The m parameter may be nil to clear the denylist after a successful reload
-// that produced no deny rules. This keeps readers lock-free while reload logic
-// swaps compiled matchers in the background.
+// that produced no deny rules. Like SetAllowlist it drops any debug metadata.
+// This keeps readers lock-free while reload logic swaps compiled matchers in
+// the background.
 func (rf *Plugin) SetDenylist(m *matcher.Matcher) {
-	rf.denylist.Store(m)
+	rf.setDenylist(m, nil, nil)
+}
+
+// setAllowlist atomically publishes a complete allowlist snapshot.
+//
+// The matcher, sources, and patterns are stored as one listState so that
+// concurrent readers always observe a self-consistent view; sources and
+// patterns are indexed by the rule IDs that matcher returns.
+func (rf *Plugin) setAllowlist(m *matcher.Matcher, sources, patterns []string) {
+	rf.allowlist.Store(listState{matcher: m, sources: sources, patterns: patterns})
+}
+
+// setDenylist atomically publishes a complete denylist snapshot, mirroring
+// setAllowlist for the deny direction.
+func (rf *Plugin) setDenylist(m *matcher.Matcher, sources, patterns []string) {
+	rf.denylist.Store(listState{matcher: m, sources: sources, patterns: patterns})
+}
+
+// loadAllowlist returns the current allowlist snapshot, or the zero listState
+// when no allowlist has been published yet.
+func (rf *Plugin) loadAllowlist() listState {
+	s, _ := rf.allowlist.Load().(listState)
+	return s
+}
+
+// loadDenylist returns the current denylist snapshot, or the zero listState
+// when no denylist has been published yet.
+func (rf *Plugin) loadDenylist() listState {
+	s, _ := rf.denylist.Load().(listState)
+	return s
 }
 
 // GetAllowlist returns the current allowlist matcher.
 //
 // The return value is nil when no allowlist has been compiled yet or when the
-// last successful reload yielded no allow rules. ServeDNS uses this on every
-// query before consulting the denylist.
+// last successful reload yielded no allow rules. ServeDNS uses the snapshot
+// loaded via loadAllowlist on every query before consulting the denylist.
 func (rf *Plugin) GetAllowlist() *matcher.Matcher {
-	v := rf.allowlist.Load()
-	if v == nil {
-		return nil
-	}
-	m, ok := v.(*matcher.Matcher)
-	if !ok {
-		return nil
-	}
-
-	return m
+	return rf.loadAllowlist().matcher
 }
 
 // GetDenylist returns the current denylist matcher.
@@ -145,16 +175,7 @@ func (rf *Plugin) GetAllowlist() *matcher.Matcher {
 // currently loaded deny set is empty. Callers use the returned matcher as a
 // read-only structure and must not mutate it.
 func (rf *Plugin) GetDenylist() *matcher.Matcher {
-	v := rf.denylist.Load()
-	if v == nil {
-		return nil
-	}
-	m, ok := v.(*matcher.Matcher)
-	if !ok {
-		return nil
-	}
-
-	return m
+	return rf.loadDenylist().matcher
 }
 
 // ServeDNS evaluates r against the active matchers and writes the response to w.
@@ -175,11 +196,11 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	qtype := r.Question[0].Qtype
 
 	// Check allowlist first
-	if wl := rf.GetAllowlist(); wl != nil {
-		if matched, ruleIDs := wl.Match(name); matched {
+	if al := rf.loadAllowlist(); al.matcher != nil {
+		if matched, ruleIDs := al.matcher.Match(name); matched {
 			rf.recordOutcome(metrics.ResultAllowlisted, start)
 			if rf.Config.Debug {
-				rf.logDebugMatch("allowlist", name, ruleIDs, rf.alSources.Load(), rf.alPatterns.Load())
+				rf.logDebugMatch("allowlist", name, ruleIDs, al.sources, al.patterns)
 			}
 			return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
 		}
@@ -211,11 +232,11 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 
 	// Check denylist
-	if bl := rf.GetDenylist(); bl != nil {
-		if matched, ruleIDs := bl.Match(name); matched {
+	if dl := rf.loadDenylist(); dl.matcher != nil {
+		if matched, ruleIDs := dl.matcher.Match(name); matched {
 			rf.recordOutcome(metrics.ResultBlockedDenylist, start)
 			if rf.Config.Debug {
-				rf.logDebugMatch("denylist", name, ruleIDs, rf.dlSources.Load(), rf.dlPatterns.Load())
+				rf.logDebugMatch("denylist", name, ruleIDs, dl.sources, dl.patterns)
 			}
 			return rf.respondBlocked(w, r, qname, qtype)
 		}
@@ -305,9 +326,7 @@ func normalizeName(name string) string {
 // logDebugMatch logs a human-readable line when the debug directive is active.
 // It shows the list label, queried name, the source file:line of the first
 // matching rule (basename only), and the original rule pattern in parentheses.
-func (rf *Plugin) logDebugMatch(label, name string, ruleIDs []uint32, sourcesVal, patternsVal interface{}) {
-	sources, _ := sourcesVal.([]string)
-	patterns, _ := patternsVal.([]string)
+func (rf *Plugin) logDebugMatch(label, name string, ruleIDs []uint32, sources, patterns []string) {
 	if len(ruleIDs) == 0 || len(sources) == 0 {
 		log.Infof("%s match name=%s rule=unknown", label, name)
 		return
@@ -366,12 +385,8 @@ func (rf *Plugin) StartWatcher() error {
 			}
 		},
 		OnUpdate: func(al watcher.Snapshot, dl watcher.Snapshot) {
-			rf.SetAllowlist(al.Matcher)
-			rf.SetDenylist(dl.Matcher)
-			rf.alSources.Store(al.Sources)
-			rf.dlSources.Store(dl.Sources)
-			rf.alPatterns.Store(al.Patterns)
-			rf.dlPatterns.Store(dl.Patterns)
+			rf.setAllowlist(al.Matcher, al.Sources, al.Patterns)
+			rf.setDenylist(dl.Matcher, dl.Sources, dl.Patterns)
 			if rf.metrics != nil {
 				rf.metrics.AllowlistRules.Set(float64(al.RuleCount))
 				rf.metrics.DenylistRules.Set(float64(dl.RuleCount))

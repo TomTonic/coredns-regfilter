@@ -1,11 +1,16 @@
 # AI Agent Guidelines
 
-<!-- TODO: Customize this file for your project. -->
-
 ## Project Overview
 
-This is a Go project. All source code is in Go. The project uses Go modules
-for dependency management.
+This is the `filterlist` CoreDNS plugin: it intercepts DNS queries and checks
+them against allowlist and denylist filter sets (AdGuard, EasyList, ABP, and
+hosts-style lists), blocking or forwarding queries according to configuration.
+
+All source code is Go and managed with Go modules. The top-level package holds
+the CoreDNS plugin (handler, setup, RFC name validation); the reusable building
+blocks live under `pkg/` (`listparser`, `blockloader`, `matcher`, `automaton`,
+`suffixmap`, `watcher`, `metrics`). Matching uses a hybrid suffix-map + DFA
+representation; directories are hot-reloaded by a debounced fsnotify watcher.
 
 ## Build & Test Commands
 
@@ -43,28 +48,23 @@ guidance** than a pure specification:
    reference to a testable example (`Example*` function).
 6. Use **English** language.
 
-Example:
+Example (from `pkg/matcher`):
 
 ```go
-// DistanceForStrings computes the Levenshtein edit distance between
-// source and target.
+// Match checks input against both the literal suffix map and the wildcard DFA.
 //
-// Both source and target must be provided as []rune slices to ensure
-// correct handling of multi-byte Unicode characters. Use []rune(s) to
-// convert a plain string.
+// The input parameter should be a domain name without trailing dot.
+// Returns true if any stored pattern matches, along with all matching rule IDs.
+// The suffix map is checked first; if both literal and wildcard patterns match,
+// all rule IDs are combined.
 //
-// The op parameter controls insertion, deletion, and substitution costs
-// as well as an optional custom match function. Use DefaultOptions for
-// standard unit costs or DefaultOptionsWithSub for unit-cost
-// substitutions.
+// In pure DFA mode (no suffix map) the byteIndex table inside the automaton
+// handles case-insensitivity, so strings.ToLower is skipped and the
+// automaton.DFA.MatchDomain result is returned directly — zero allocation.
 //
-// Returns the minimum number of edit operations needed to transform
-// source into target under the given cost model.
-//
-// Typical usage is fuzzy string matching, typo detection, or computing
-// similarity scores (see also RatioForStrings for a normalized 0–1
-// score). For a full edit script, use EditScriptForStrings instead.
-func DistanceForStrings(source, target []rune, op Options) int { ... }
+// Typical usage is on the DNS request hot path: the plugin calls Match once
+// per query against the active allowlist and denylist matchers.
+func (m *Matcher) Match(input string) (matched bool, ruleIDs []uint32) { ... }
 ```
 
 Unexported helpers do not require full documentation, but a one-line
