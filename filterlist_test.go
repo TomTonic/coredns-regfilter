@@ -736,23 +736,22 @@ func TestShortSource(t *testing.T) {
 	}
 }
 
-// TestServeDNSDebugBlacklistMatch verifies that operators see per-query debug
-// output identifying the matching blacklist rule when the debug directive is
-// active.
+// TestServeDNSLogQueriesBlacklistMatch verifies that operators see per-query
+// log output identifying the matching blacklist rule when log_queries is active.
 //
-// This test covers the debug logging path in ServeDNS for blacklist hits.
+// This test covers the log_queries path in ServeDNS for blacklist hits.
 //
-// It enables debug mode, sets up a blacklist DFA with source information, and
+// It enables log_queries, sets up a blacklist DFA with source information, and
 // asserts that a blocked query triggers the respondBlocked path (NXDOMAIN)
 // without errors. The actual log output goes to CoreDNS's logger and is not
-// captured here; the test verifies that debug mode does not break the match.
-func TestServeDNSDebugBlacklistMatch(t *testing.T) {
+// captured here; the test verifies that log_queries does not break the match.
+func TestServeDNSLogQueriesBlacklistMatch(t *testing.T) {
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next: next,
 		Config: Config{
-			Action: ActionConfig{Mode: "nxdomain"},
-			Debug:  true,
+			Action:     ActionConfig{Mode: "nxdomain"},
+			LogQueries: true,
 		},
 	}
 	dfa, sources, patterns := buildMatcherWithSources(t, []listparser.Rule{
@@ -771,21 +770,20 @@ func TestServeDNSDebugBlacklistMatch(t *testing.T) {
 	}
 }
 
-// TestServeDNSDebugWhitelistMatch verifies that operators see per-query debug
-// output identifying the matching whitelist rule when the debug directive is
-// active.
+// TestServeDNSLogQueriesWhitelistMatch verifies that operators see per-query
+// log output identifying the matching whitelist rule when log_queries is active.
 //
-// This test covers the debug logging path in ServeDNS for whitelist hits.
+// This test covers the log_queries path in ServeDNS for whitelist hits.
 //
 // It sets up a whitelist DFA with source info and asserts that a matched query
 // is forwarded to the next handler.
-func TestServeDNSDebugWhitelistMatch(t *testing.T) {
+func TestServeDNSLogQueriesWhitelistMatch(t *testing.T) {
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next: next,
 		Config: Config{
-			Action: ActionConfig{Mode: "nxdomain"},
-			Debug:  true,
+			Action:     ActionConfig{Mode: "nxdomain"},
+			LogQueries: true,
 		},
 	}
 	dfa, sources, patterns := buildMatcherWithSources(t, []listparser.Rule{
@@ -804,20 +802,20 @@ func TestServeDNSDebugWhitelistMatch(t *testing.T) {
 	}
 }
 
-// TestServeDNSDebugNoMatch verifies that operators see a "no match" debug line
-// when neither whitelist nor blacklist match the queried name.
+// TestServeDNSLogQueriesNoMatch verifies that operators see a "no match" log
+// line when neither whitelist nor blacklist match the queried name.
 //
-// This test covers the debug logging path in ServeDNS for unmatched queries.
+// This test covers the log_queries path in ServeDNS for unmatched queries.
 //
-// It enables debug mode, sets up a blacklist that does not contain the queried
+// It enables log_queries, sets up a blacklist that does not contain the queried
 // domain, and asserts that the query is forwarded to the next handler.
-func TestServeDNSDebugNoMatch(t *testing.T) {
+func TestServeDNSLogQueriesNoMatch(t *testing.T) {
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next: next,
 		Config: Config{
-			Action: ActionConfig{Mode: "nxdomain"},
-			Debug:  true,
+			Action:     ActionConfig{Mode: "nxdomain"},
+			LogQueries: true,
 		},
 	}
 	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))

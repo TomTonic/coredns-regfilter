@@ -44,7 +44,7 @@ This document focuses on the runtime system behavior:
 - how the plugin is inserted into the CoreDNS handler chain;
 - how rules flow from files into compiled snapshots;
 - how whitelist and blacklist semantics are derived from directory context;
-- how reload failures, empty lists, and debug output are handled.
+- how reload failures, empty lists, and per-query logging are handled.
 
 The internal construction details of the suffix map and DFA still matter, but
 they are implementation mechanisms rather than the primary architectural story.
@@ -132,7 +132,7 @@ That distinction matters because:
 
 - Corefile stanza order does not control which plugin runs first;
 - `filterlist` must be inserted before `forward` in the generated chain;
-- if `forward` runs first, `filterlist` may initialize successfully but never see live queries, so it cannot filter or emit per-query debug logs.
+- if `forward` runs first, `filterlist` may initialize successfully but never see live queries, so it cannot filter or emit per-query logs.
 
 The plugin emits a startup warning when it detects that `forward` appears
 before `filterlist` in the constructed handler chain.
@@ -318,11 +318,14 @@ For that reason, the active snapshots retain:
 - source file and line information;
 - canonical pattern strings.
 
-When `debug` is enabled:
+When `log_queries` is enabled (the deprecated `debug` keyword is an alias):
 
 - blacklist matches log the matching list, normalized name, source, and pattern;
 - whitelist matches log the same information;
 - unmatched queries log `no match`.
+
+Raw filesystem events from fsnotify and DFA compile-progress messages are emitted
+at `[DEBUG]` level and only appear when CoreDNS is started with `--debug`.
 
 This is why the snapshot contains more than just the matcher pointer.
 

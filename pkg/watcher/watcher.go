@@ -21,6 +21,7 @@ import (
 
 // Logger is a minimal logging interface.
 type Logger interface {
+	Debugf(format string, args ...interface{})
 	Warnf(format string, args ...interface{})
 	Infof(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
@@ -28,6 +29,9 @@ type Logger interface {
 
 // nopLogger discards all log output when callers leave Logger nil.
 type nopLogger struct{}
+
+// Debugf discards watcher debug messages when no logger is configured.
+func (nopLogger) Debugf(string, ...interface{}) {}
 
 // Warnf discards watcher warnings when no logger is configured.
 func (nopLogger) Warnf(string, ...interface{}) {}
@@ -39,13 +43,15 @@ func (nopLogger) Infof(string, ...interface{}) {}
 func (nopLogger) Errorf(string, ...interface{}) {}
 
 // matcherLogger adapts a watcher Logger to the matcher.Logger interface.
+// Compile-progress messages from the DFA builder are routed to Debugf because
+// they are internal implementation details, not operational events.
 type matcherLogger struct {
 	inner Logger
 }
 
-// Infof delegates compile-progress messages to the watcher logger.
+// Infof routes compile-progress messages from the DFA builder to debug level.
 func (a *matcherLogger) Infof(format string, args ...interface{}) {
-	a.inner.Infof(format, args...)
+	a.inner.Debugf(format, args...)
 }
 
 // Config configures the watcher.
@@ -232,7 +238,7 @@ func (w *dirWatcher) loop() {
 			if !ok {
 				return
 			}
-			w.cfg.Logger.Infof("watcher: event %s on %s", event.Op, event.Name)
+			w.cfg.Logger.Debugf("watcher: event %s on %s", event.Op, event.Name)
 			w.handleWatchEvent(event)
 
 			// Determine which directory changed

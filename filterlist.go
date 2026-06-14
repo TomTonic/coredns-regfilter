@@ -70,7 +70,7 @@ type Config struct {
 	Debounce           time.Duration
 	MaxStates          int
 	CompileTimeout     time.Duration
-	Debug              bool
+	LogQueries         bool
 	InvertAllowlist    bool
 	DenyNonAllowlisted bool
 	DisableRFCChecks   bool
@@ -199,7 +199,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	if al := rf.loadAllowlist(); al.matcher != nil {
 		if matched, ruleIDs := al.matcher.Match(name); matched {
 			rf.recordOutcome(metrics.ResultAllowlisted, start)
-			if rf.Config.Debug {
+			if rf.Config.LogQueries {
 				rf.logDebugMatch("allowlist", name, ruleIDs, al.sources, al.patterns)
 			}
 			return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
@@ -217,7 +217,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	//    RFC validation for names that would be blocked anyway.
 	if rf.Config.DenyNonAllowlisted {
 		rf.recordOutcome(metrics.ResultBlockedUnlisted, start)
-		if rf.Config.Debug {
+		if rf.Config.LogQueries {
 			log.Infof("denylist precheck blocked name=%s reason=deny_non_allowlisted", name)
 		}
 		return rf.respondBlocked(w, r, qname, qtype)
@@ -225,7 +225,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 	if !rf.Config.DisableRFCChecks && !isStrictDNSQueryName(qname) {
 		rf.recordOutcome(metrics.ResultBlockedRFC, start)
-		if rf.Config.Debug {
+		if rf.Config.LogQueries {
 			log.Infof("denylist precheck blocked name=%s reason=RFC_name_violation", name)
 		}
 		return rf.respondBlocked(w, r, qname, qtype)
@@ -235,7 +235,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	if dl := rf.loadDenylist(); dl.matcher != nil {
 		if matched, ruleIDs := dl.matcher.Match(name); matched {
 			rf.recordOutcome(metrics.ResultBlockedDenylist, start)
-			if rf.Config.Debug {
+			if rf.Config.LogQueries {
 				rf.logDebugMatch("denylist", name, ruleIDs, dl.sources, dl.patterns)
 			}
 			return rf.respondBlocked(w, r, qname, qtype)
@@ -244,7 +244,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 	// No match — forward to next plugin
 	rf.recordOutcome(metrics.ResultForwarded, start)
-	if rf.Config.Debug {
+	if rf.Config.LogQueries {
 		log.Infof("no match name=%s", name)
 	}
 	return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
@@ -323,7 +323,7 @@ func normalizeName(name string) string {
 	return name
 }
 
-// logDebugMatch logs a human-readable line when the debug directive is active.
+// logDebugMatch logs a human-readable line when log_queries is active.
 // It shows the list label, queried name, the source file:line of the first
 // matching rule (basename only), and the original rule pattern in parentheses.
 func (rf *Plugin) logDebugMatch(label, name string, ruleIDs []uint32, sources, patterns []string) {
@@ -424,6 +424,9 @@ func (rf *Plugin) Stop() error {
 
 // pluginLogger adapts CoreDNS log to watcher.Logger.
 type pluginLogger struct{}
+
+// Debugf forwards watcher debug messages to the CoreDNS filterlist logger.
+func (pluginLogger) Debugf(format string, args ...interface{}) { log.Debugf(format, args...) }
 
 // Warnf forwards watcher warnings to the CoreDNS filterlist logger.
 func (pluginLogger) Warnf(format string, args ...interface{}) { log.Warningf(format, args...) }

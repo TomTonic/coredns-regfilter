@@ -248,35 +248,55 @@ func TestParseConfigRejectsNonPositiveDurations(t *testing.T) {
 	}
 }
 
-// TestParseConfigDebugDirective verifies that operators can enable per-query
-// debug output by adding the debug keyword to the filterlist Corefile block.
+// TestParseConfigLogQueriesDirective verifies that operators can enable
+// per-query outcome logging via log_queries (or its deprecated alias debug) in
+// the filterlist Corefile block.
 //
-// This test covers the plugin Corefile parsing path for the debug directive.
+// This test covers the plugin Corefile parsing path for the log_queries and
+// debug directives.
 //
-// It asserts that debug=false by default, and debug=true when the keyword is
-// present.
-func TestParseConfigDebugDirective(t *testing.T) {
-	// Without debug
-	c := caddy.NewTestController("dns", `filterlist { denylist_dir /tmp/bl }`)
-	cfg, err := parseConfig(c)
-	if err != nil {
-		t.Fatalf("parseConfig error: %v", err)
-	}
-	if cfg.Debug {
-		t.Error("expected Debug=false by default")
+// It asserts that LogQueries is false by default, true when log_queries is
+// present, and also true when the deprecated debug keyword is used.
+func TestParseConfigLogQueriesDirective(t *testing.T) {
+	cases := []struct {
+		name     string
+		corefile string
+		wantTrue bool
+	}{
+		{
+			name:     "default is off",
+			corefile: `filterlist { denylist_dir /tmp/bl }`,
+			wantTrue: false,
+		},
+		{
+			name: "log_queries enables monitoring",
+			corefile: `filterlist {
+				denylist_dir /tmp/bl
+				log_queries
+			}`,
+			wantTrue: true,
+		},
+		{
+			name: "debug is a deprecated alias for log_queries",
+			corefile: `filterlist {
+				denylist_dir /tmp/bl
+				debug
+			}`,
+			wantTrue: true,
+		},
 	}
 
-	// With debug
-	c = caddy.NewTestController("dns", `filterlist {
-		denylist_dir /tmp/bl
-		debug
-	}`)
-	cfg, err = parseConfig(c)
-	if err != nil {
-		t.Fatalf("parseConfig error: %v", err)
-	}
-	if !cfg.Debug {
-		t.Error("expected Debug=true when debug directive is present")
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", tt.corefile)
+			cfg, err := parseConfig(c)
+			if err != nil {
+				t.Fatalf("parseConfig error: %v", err)
+			}
+			if cfg.LogQueries != tt.wantTrue {
+				t.Errorf("LogQueries = %v, want %v", cfg.LogQueries, tt.wantTrue)
+			}
+		})
 	}
 }
 

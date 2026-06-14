@@ -209,8 +209,11 @@ func parseDirective(c *caddy.Controller, cfg *Config) error {
 			return err
 		}
 		cfg.Action.TTL = value
+	case "log_queries":
+		cfg.LogQueries = true
 	case "debug":
-		cfg.Debug = true
+		// "debug" is a deprecated alias for log_queries; prefer log_queries in new Corefiles.
+		cfg.LogQueries = true
 	case "invert_allowlist":
 		cfg.InvertAllowlist = true
 	case "deny_non_allowlisted":
