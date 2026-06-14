@@ -176,15 +176,8 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 	// Check allowlist first
 	if wl := rf.GetAllowlist(); wl != nil {
-		if rf.metrics != nil {
-			rf.metrics.AllowlistChecks.Inc()
-		}
 		if matched, ruleIDs := wl.Match(name); matched {
-			if rf.metrics != nil {
-				rf.metrics.AllowlistHits.Inc()
-				elapsed := time.Since(start).Seconds()
-				rf.metrics.MatchDuration.WithLabelValues("accept").Observe(elapsed)
-			}
+			rf.recordOutcome(metrics.ResultAllowlisted, start)
 			if rf.Config.Debug {
 				rf.logDebugMatch("allowlist", name, ruleIDs, rf.alSources.Load(), rf.alPatterns.Load())
 			}
@@ -202,12 +195,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	//    deny_non_allowlisted can short-circuit the (slightly more expensive)
 	//    RFC validation for names that would be blocked anyway.
 	if rf.Config.DenyNonAllowlisted {
-		if rf.metrics != nil {
-			rf.metrics.DenylistChecks.Inc()
-			rf.metrics.DenylistHits.Inc()
-			elapsed := time.Since(start).Seconds()
-			rf.metrics.MatchDuration.WithLabelValues("reject").Observe(elapsed)
-		}
+		rf.recordOutcome(metrics.ResultBlockedUnlisted, start)
 		if rf.Config.Debug {
 			log.Infof("denylist precheck blocked name=%s reason=deny_non_allowlisted", name)
 		}
@@ -215,12 +203,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 
 	if !rf.Config.DisableRFCChecks && !isStrictDNSQueryName(qname) {
-		if rf.metrics != nil {
-			rf.metrics.DenylistChecks.Inc()
-			rf.metrics.DenylistHits.Inc()
-			elapsed := time.Since(start).Seconds()
-			rf.metrics.MatchDuration.WithLabelValues("reject").Observe(elapsed)
-		}
+		rf.recordOutcome(metrics.ResultBlockedRFC, start)
 		if rf.Config.Debug {
 			log.Infof("denylist precheck blocked name=%s reason=RFC_name_violation", name)
 		}
@@ -229,15 +212,8 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 
 	// Check denylist
 	if bl := rf.GetDenylist(); bl != nil {
-		if rf.metrics != nil {
-			rf.metrics.DenylistChecks.Inc()
-		}
 		if matched, ruleIDs := bl.Match(name); matched {
-			if rf.metrics != nil {
-				rf.metrics.DenylistHits.Inc()
-				elapsed := time.Since(start).Seconds()
-				rf.metrics.MatchDuration.WithLabelValues("reject").Observe(elapsed)
-			}
+			rf.recordOutcome(metrics.ResultBlockedDenylist, start)
 			if rf.Config.Debug {
 				rf.logDebugMatch("denylist", name, ruleIDs, rf.dlSources.Load(), rf.dlPatterns.Load())
 			}
@@ -246,14 +222,28 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 
 	// No match — forward to next plugin
-	if rf.metrics != nil {
-		elapsed := time.Since(start).Seconds()
-		rf.metrics.MatchDuration.WithLabelValues("pass").Observe(elapsed)
-	}
+	rf.recordOutcome(metrics.ResultForwarded, start)
 	if rf.Config.Debug {
 		log.Infof("no match name=%s", name)
 	}
 	return plugin.NextOrFailure(rf.Name(), rf.Next, ctx, w, r)
+}
+
+// recordOutcome records the terminal decision for one query.
+//
+// It increments the queries_total counter for result and observes the elapsed
+// time on the match_duration histogram, bucketed by whether the query was
+// forwarded or blocked. It is a no-op when metrics are disabled.
+func (rf *Plugin) recordOutcome(result string, start time.Time) {
+	if rf.metrics == nil {
+		return
+	}
+	rf.metrics.Queries.WithLabelValues(result).Inc()
+	latency := metrics.LatencyForwarded
+	if result != metrics.ResultAllowlisted && result != metrics.ResultForwarded {
+		latency = metrics.LatencyBlocked
+	}
+	rf.metrics.MatchDuration.WithLabelValues(latency).Observe(time.Since(start).Seconds())
 }
 
 // respondBlocked generates a blocked response based on the configured action.
@@ -385,6 +375,8 @@ func (rf *Plugin) StartWatcher() error {
 			if rf.metrics != nil {
 				rf.metrics.AllowlistRules.Set(float64(al.RuleCount))
 				rf.metrics.DenylistRules.Set(float64(dl.RuleCount))
+				rf.metrics.AllowlistStates.Set(float64(al.StateCount))
+				rf.metrics.DenylistStates.Set(float64(dl.StateCount))
 			}
 			log.Infof(
 				"matchers updated: allowlist_active=%v allowlist_rules=%d allowlist_states=%d denylist_active=%v denylist_rules=%d denylist_states=%d",

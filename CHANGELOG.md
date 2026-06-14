@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Metrics overhaul (breaking)**: Reworked the Prometheus metric set for clearer operational signal.
+  - Added `coredns_filterlist_queries_total{result=...}`, a single counter incremented exactly once per query. The `result` label distinguishes `allowlisted`, `forwarded`, `blocked_denylist`, `blocked_rfc`, and `blocked_unlisted`, so block volume can now be broken down by reason.
+  - Added `coredns_filterlist_allowlist_states` and `coredns_filterlist_denylist_states` gauges exposing the compiled matcher state counts (memory/complexity proxy) that were previously only written to the compile log.
+  - Changed `coredns_filterlist_match_duration_seconds` from a summary to a histogram and reduced its `result` label to `forwarded`/`blocked`; retuned the buckets to the microsecond matching range.
+  - Retuned `coredns_filterlist_compile_duration_seconds` buckets to span 0.05s–51s.
+  - **Removed** `coredns_filterlist_allowlist_checks_total`, `coredns_filterlist_denylist_checks_total`, `coredns_filterlist_allowlist_hits_total`, and `coredns_filterlist_denylist_hits_total`. The checks counters carried little signal and the hits counters are subsumed by `queries_total`. Dashboards and alerts referencing these names must migrate to `queries_total{result=...}`.
+
 ## [v0.1.0] - 2026-04-04
 
 ### Features

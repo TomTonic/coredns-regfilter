@@ -225,58 +225,65 @@ Those tests assert that:
 
 All metrics are exported with the `coredns_filterlist_` prefix through the CoreDNS Prometheus endpoint.
 
-### Counters and Gauges
+### Request-path Counters
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `coredns_filterlist_allowlist_checks_total` | Counter | Number of queries evaluated against the allowlist matcher |
-| `coredns_filterlist_denylist_checks_total` | Counter | Number of queries evaluated against the denylist matcher |
-| `coredns_filterlist_allowlist_hits_total` | Counter | Number of queries accepted because the allowlist matched |
-| `coredns_filterlist_denylist_hits_total` | Counter | Number of queries blocked because the denylist matched |
+| `coredns_filterlist_queries_total` | Counter | Total queries handled, labeled by `result` (see below) |
+
+The `coredns_filterlist_queries_total` counter records exactly one increment per
+query. Summing it over all `result` values yields the total query volume, and
+the individual series tell you *why* a query was forwarded or blocked:
+
+| `result` label | Meaning |
+|----------------|---------|
+| `allowlisted` | The query matched the allowlist and was forwarded |
+| `forwarded` | No rule matched and the query was forwarded unchanged |
+| `blocked_denylist` | The query matched the denylist and was blocked |
+| `blocked_rfc` | The query name failed the RFC 1035 / IDNA check and was blocked |
+| `blocked_unlisted` | The query was blocked by the `deny_non_allowlisted` policy |
+
+### Compile and Ruleset Gauges/Counters
+
+| Metric | Type | Description |
+|--------|------|-------------|
 | `coredns_filterlist_compile_errors_total` | Counter | Number of failed filter load or compile runs |
-| `coredns_filterlist_allowlist_rules` | Gauge | Current number of supported allowlist rules loaded into the active snapshot |
-| `coredns_filterlist_denylist_rules` | Gauge | Current number of supported denylist rules loaded into the active snapshot |
+| `coredns_filterlist_allowlist_rules` | Gauge | Current number of compiled allowlist rules in the active snapshot |
+| `coredns_filterlist_denylist_rules` | Gauge | Current number of compiled denylist rules in the active snapshot |
+| `coredns_filterlist_allowlist_states` | Gauge | Number of states in the compiled allowlist matcher (memory/complexity proxy) |
+| `coredns_filterlist_denylist_states` | Gauge | Number of states in the compiled denylist matcher (memory/complexity proxy) |
 | `coredns_filterlist_last_compile_timestamp_seconds` | Gauge | Unix timestamp of the most recent successful compilation |
 | `coredns_filterlist_last_compile_duration_seconds` | Gauge | Duration in seconds of the most recent successful compilation |
 
-### Histograms and Summaries
+### Histograms
 
 | Metric | Type | Description |
 |--------|------|-------------|
 | `coredns_filterlist_compile_duration_seconds` | Histogram | Distribution of matcher compilation durations across reloads |
-| `coredns_filterlist_match_duration_seconds` | Summary | Distribution of query matching latency, labeled by result |
-
-### `match_duration_seconds` Labels
-
-The `coredns_filterlist_match_duration_seconds` summary uses a `result` label with the following values:
-
-| Label value | Meaning |
-|-------------|---------|
-| `accept` | The query matched the allowlist and was passed to the next plugin |
-| `reject` | The query matched the denylist and was blocked |
-| `pass` | No rule matched and the query was forwarded unchanged |
+| `coredns_filterlist_match_duration_seconds` | Histogram | Per-query matching latency, labeled by `result` (`forwarded` / `blocked`) |
 
 ### Interpreting the Metrics
 
-- Use `allowlist_checks_total` and `denylist_checks_total` as the denominator when you want match ratios per automaton.
-- Use `allowlist_hits_total` and `denylist_hits_total` to understand policy decisions over time.
+- Use the `result` breakdown of `queries_total` to track total volume, block rate, and the reason for each block (denylist vs. RFC violation vs. unlisted).
 - Use `compile_duration_seconds` and `last_compile_duration_seconds` to spot slow reloads.
-- Use `last_compile_timestamp_seconds` to verify that file changes are being picked up.
+- Use `last_compile_timestamp_seconds` to alert when file changes stop being picked up (e.g. `time() - ...last_compile_timestamp_seconds > 3600`).
+- Use `compile_errors_total` to alert on failing reloads while the plugin keeps serving the previous ruleset.
+- Use `allowlist_states` / `denylist_states` to watch matcher memory and complexity grow as lists change.
 - Use `match_duration_seconds` to watch lookup overhead on the request path.
 - The `allowlist_rules` and `denylist_rules` gauges reflect the currently active parsed rule counts after reload, which is more useful operationally than just counting raw source lines.
 
-Typical Prometheus ratios look like this:
+Typical Prometheus queries look like this:
 
 ```promql
-rate(coredns_filterlist_allowlist_hits_total[5m])
+# Overall block rate
+sum(rate(coredns_filterlist_queries_total{result=~"blocked_.*"}[5m]))
 /
-rate(coredns_filterlist_allowlist_checks_total[5m])
+sum(rate(coredns_filterlist_queries_total[5m]))
 ```
 
 ```promql
-rate(coredns_filterlist_denylist_hits_total[5m])
-/
-rate(coredns_filterlist_denylist_checks_total[5m])
+# Blocked queries broken down by reason
+sum by (result) (rate(coredns_filterlist_queries_total{result=~"blocked_.*"}[5m]))
 ```
 
 ## Development
