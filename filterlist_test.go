@@ -313,6 +313,46 @@ func newMetrics(t *testing.T) (m *rfmetrics.Registry, promReg *prometheus.Regist
 	return rfmetrics.NewRegistryWith(promReg), promReg
 }
 
+// TestListStateSnapshotConsistency verifies that a reload never exposes a
+// matcher together with mismatched debug metadata, so operators always see the
+// correct source file and pattern for a matched rule.
+//
+// This test covers the consolidated listState atomic published by setAllowlist
+// and setDenylist in the plugin package.
+//
+// It publishes a matcher with its sources and patterns, then asserts that the
+// loaded snapshot returns all three from the same compile, and that a later
+// matcher-only publish atomically clears the stale metadata.
+func TestListStateSnapshotConsistency(t *testing.T) {
+	rf := &Plugin{}
+
+	if got := rf.loadAllowlist(); got.matcher != nil || got.sources != nil || got.patterns != nil {
+		t.Fatalf("zero-value snapshot should be empty, got %+v", got)
+	}
+
+	dfa, sources, patterns := buildMatcherWithSources(t, []listparser.Rule{
+		{Pattern: "safe.example.com", Source: "/etc/coredns/allow.txt:3"},
+	})
+	rf.setAllowlist(dfa, sources, patterns)
+
+	state := rf.loadAllowlist()
+	if state.matcher != dfa {
+		t.Error("loaded matcher differs from published matcher")
+	}
+	if len(state.sources) != len(sources) || state.sources[0] != sources[0] {
+		t.Errorf("sources = %v, want %v", state.sources, sources)
+	}
+	if len(state.patterns) != len(patterns) || state.patterns[0] != patterns[0] {
+		t.Errorf("patterns = %v, want %v", state.patterns, patterns)
+	}
+
+	// A matcher-only publish must atomically drop the previous metadata.
+	rf.SetAllowlist(dfa)
+	if state := rf.loadAllowlist(); state.sources != nil || state.patterns != nil {
+		t.Errorf("SetAllowlist must clear stale metadata, got sources=%v patterns=%v", state.sources, state.patterns)
+	}
+}
+
 func getMatchDurationCount(t *testing.T, promReg *prometheus.Registry, result string) uint64 {
 	t.Helper()
 	families, err := promReg.Gather()
@@ -718,9 +758,7 @@ func TestServeDNSDebugBlacklistMatch(t *testing.T) {
 	dfa, sources, patterns := buildMatcherWithSources(t, []listparser.Rule{
 		{Pattern: "ads.example.com", Source: "/etc/coredns/blacklist/deny.txt:7"},
 	})
-	rf.SetDenylist(dfa)
-	rf.dlSources.Store(sources)
-	rf.dlPatterns.Store(patterns)
+	rf.setDenylist(dfa, sources, patterns)
 
 	w := newMockWriter()
 	r := makeQuery("ads.example.com", dns.TypeA)
@@ -753,9 +791,7 @@ func TestServeDNSDebugWhitelistMatch(t *testing.T) {
 	dfa, sources, patterns := buildMatcherWithSources(t, []listparser.Rule{
 		{Pattern: "safe.example.com", Source: "/etc/coredns/whitelist/allow.txt:3"},
 	})
-	rf.SetAllowlist(dfa)
-	rf.alSources.Store(sources)
-	rf.alPatterns.Store(patterns)
+	rf.setAllowlist(dfa, sources, patterns)
 
 	w := newMockWriter()
 	r := makeQuery("safe.example.com", dns.TypeA)

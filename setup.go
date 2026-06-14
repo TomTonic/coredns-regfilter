@@ -28,8 +28,8 @@ func setup(c *caddy.Controller) error {
 	if err != nil {
 		return plugin.Error("filterlist", err)
 	}
-	if cfg.MaxStates == 0 {
-		log.Warning("filterlist configured with max_states=0 (uncapped DFA state growth); use with care")
+	for _, warning := range configWarnings(&cfg) {
+		log.Warning(warning)
 	}
 
 	rf := &Plugin{
@@ -120,6 +120,26 @@ func parseConfig(c *caddy.Controller) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// configWarnings returns non-fatal configuration warnings for cfg.
+//
+// The cfg parameter is a fully parsed Config as produced by parseConfig. The
+// returned strings are human-readable warnings about settings that are valid
+// but operationally risky, such as an uncapped DFA state limit or a
+// deny-all-except-allowlist policy with no allowlist directory configured.
+// setup logs each returned warning; the function is pure so it can be unit
+// tested without a caddy.Controller.
+func configWarnings(cfg *Config) []string {
+	var warnings []string
+	if cfg.MaxStates == 0 {
+		warnings = append(warnings, "filterlist configured with max_states=0 (uncapped DFA state growth); use with care")
+	}
+	if cfg.DenyNonAllowlisted && cfg.AllowlistDir == "" {
+		warnings = append(warnings, "filterlist configured with deny_non_allowlisted but no allowlist_dir; every query will be blocked")
+	}
+
+	return warnings
 }
 
 // parseDirective keeps the per-directive parsing rules out of parseConfig.

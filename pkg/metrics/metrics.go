@@ -26,6 +26,18 @@ const (
 	ResultBlockedUnlisted = "blocked_unlisted"
 )
 
+// allResults lists every value the Queries "result" label can take. It is used
+// to pre-initialize the counter series so that all of them are exported as 0
+// from process start, keeping Prometheus rate() queries well-defined before the
+// first matching query arrives.
+var allResults = []string{
+	ResultAllowlisted,
+	ResultForwarded,
+	ResultBlockedDenylist,
+	ResultBlockedRFC,
+	ResultBlockedUnlisted,
+}
+
 // Match latency label values for the MatchDuration histogram.
 //
 // Latency is split only into the two coarse outcomes that matter for the
@@ -37,6 +49,13 @@ const (
 	// LatencyBlocked labels latency of queries that were blocked.
 	LatencyBlocked = "blocked"
 )
+
+// allLatencies lists every value the MatchDuration "result" label can take, used
+// to pre-initialize the histogram series alongside allResults.
+var allLatencies = []string{
+	LatencyForwarded,
+	LatencyBlocked,
+}
 
 // Registry groups the Prometheus collectors used by filterlist.
 //
@@ -156,6 +175,16 @@ func NewRegistryWith(reg prometheus.Registerer) *Registry {
 	r.DenylistStates = registerGauge(reg, r.DenylistStates)
 	r.LastCompileTimestamp = registerGauge(reg, r.LastCompileTimestamp)
 	r.LastCompileDurationSeconds = registerGauge(reg, r.LastCompileDurationSeconds)
+
+	// Pre-create every labeled series so that all results are exported as 0
+	// before the first query, keeping rate() queries well-defined and making the
+	// full set of outcomes discoverable on a freshly started instance.
+	for _, result := range allResults {
+		r.Queries.WithLabelValues(result)
+	}
+	for _, latency := range allLatencies {
+		r.MatchDuration.WithLabelValues(latency)
+	}
 
 	return r
 }

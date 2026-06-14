@@ -123,6 +123,46 @@ func TestMatchDurationLabels(t *testing.T) {
 	}
 }
 
+// TestNewRegistryInitializesResultSeries verifies that operators see every query outcome on a freshly started instance — so rate() queries are well-defined before the first matching query — by asserting that all result and latency series are exported as zero immediately after registry creation.
+func TestNewRegistryInitializesResultSeries(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	NewRegistryWith(reg)
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seriesByMetric := map[string]map[string]bool{
+		"coredns_filterlist_queries_total":          {},
+		"coredns_filterlist_match_duration_seconds": {},
+	}
+	for _, f := range families {
+		labels, ok := seriesByMetric[f.GetName()]
+		if !ok {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "result" {
+					labels[l.GetValue()] = true
+				}
+			}
+		}
+	}
+
+	for _, result := range allResults {
+		if !seriesByMetric["coredns_filterlist_queries_total"][result] {
+			t.Errorf("queries_total missing pre-initialized series result=%q", result)
+		}
+	}
+	for _, latency := range allLatencies {
+		if !seriesByMetric["coredns_filterlist_match_duration_seconds"][latency] {
+			t.Errorf("match_duration_seconds missing pre-initialized series result=%q", latency)
+		}
+	}
+}
+
 // TestQueriesResultLabels verifies that operators can break down decisions by result in the metrics package by asserting that every result label produces an independent counter series.
 func TestQueriesResultLabels(t *testing.T) {
 	reg := prometheus.NewRegistry()
