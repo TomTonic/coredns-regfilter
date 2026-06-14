@@ -12,17 +12,11 @@ func TestNewRegistryWith(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	r := NewRegistryWith(reg)
 
-	if r.AllowlistChecks == nil {
-		t.Fatal("AllowlistChecks is nil")
+	if r.Queries == nil {
+		t.Fatal("Queries is nil")
 	}
-	if r.DenylistChecks == nil {
-		t.Fatal("DenylistChecks is nil")
-	}
-	if r.AllowlistHits == nil {
-		t.Fatal("AllowlistHits is nil")
-	}
-	if r.DenylistHits == nil {
-		t.Fatal("DenylistHits is nil")
+	if r.MatchDuration == nil {
+		t.Fatal("MatchDuration is nil")
 	}
 	if r.CompileErrors == nil {
 		t.Fatal("CompileErrors is nil")
@@ -36,14 +30,17 @@ func TestNewRegistryWith(t *testing.T) {
 	if r.DenylistRules == nil {
 		t.Fatal("DenylistRules is nil")
 	}
+	if r.AllowlistStates == nil {
+		t.Fatal("AllowlistStates is nil")
+	}
+	if r.DenylistStates == nil {
+		t.Fatal("DenylistStates is nil")
+	}
 	if r.LastCompileTimestamp == nil {
 		t.Fatal("LastCompileTimestamp is nil")
 	}
 	if r.LastCompileDurationSeconds == nil {
 		t.Fatal("LastCompileDurationSeconds is nil")
-	}
-	if r.MatchDuration == nil {
-		t.Fatal("MatchDuration is nil")
 	}
 }
 
@@ -53,11 +50,14 @@ func TestNewRegistryWithReusesExistingCollectors(t *testing.T) {
 	first := NewRegistryWith(reg)
 	second := NewRegistryWith(reg)
 
-	if first.AllowlistChecks != second.AllowlistChecks {
-		t.Fatal("AllowlistChecks collector was not reused")
+	if first.Queries != second.Queries {
+		t.Fatal("Queries collector was not reused")
 	}
 	if first.DenylistRules != second.DenylistRules {
 		t.Fatal("DenylistRules collector was not reused")
+	}
+	if first.DenylistStates != second.DenylistStates {
+		t.Fatal("DenylistStates collector was not reused")
 	}
 	if first.MatchDuration != second.MatchDuration {
 		t.Fatal("MatchDuration collector was not reused")
@@ -89,12 +89,12 @@ func TestLastCompileMetrics(t *testing.T) {
 	}
 }
 
-// TestMatchDurationLabels verifies that operators can break down query latency by result type in the metrics package by asserting that accept, reject, and pass labels each record observations.
+// TestMatchDurationLabels verifies that operators can break down query latency by outcome in the metrics package by asserting that the forwarded and blocked labels each record observations.
 func TestMatchDurationLabels(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	r := NewRegistryWith(reg)
 
-	for _, label := range []string{"accept", "reject", "pass"} {
+	for _, label := range []string{LatencyForwarded, LatencyBlocked} {
 		r.MatchDuration.WithLabelValues(label).Observe(0.001)
 	}
 
@@ -107,19 +107,59 @@ func TestMatchDurationLabels(t *testing.T) {
 	for _, f := range families {
 		if f.GetName() == "coredns_filterlist_match_duration_seconds" {
 			found = true
-			if len(f.GetMetric()) != 3 {
-				t.Errorf("expected 3 metric series (accept/reject/pass), got %d", len(f.GetMetric()))
+			if len(f.GetMetric()) != 2 {
+				t.Errorf("expected 2 metric series (forwarded/blocked), got %d", len(f.GetMetric()))
 			}
 			for _, m := range f.GetMetric() {
-				if m.GetSummary().GetSampleCount() != 1 {
+				if m.GetHistogram().GetSampleCount() != 1 {
 					t.Errorf("expected 1 observation for label %v, got %d",
-						m.GetLabel(), m.GetSummary().GetSampleCount())
+						m.GetLabel(), m.GetHistogram().GetSampleCount())
 				}
 			}
 		}
 	}
 	if !found {
 		t.Error("match_duration_seconds metric not found in gathered families")
+	}
+}
+
+// TestQueriesResultLabels verifies that operators can break down decisions by result in the metrics package by asserting that every result label produces an independent counter series.
+func TestQueriesResultLabels(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	r := NewRegistryWith(reg)
+
+	results := []string{
+		ResultAllowlisted,
+		ResultForwarded,
+		ResultBlockedDenylist,
+		ResultBlockedRFC,
+		ResultBlockedUnlisted,
+	}
+	for _, result := range results {
+		r.Queries.WithLabelValues(result).Inc()
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, f := range families {
+		if f.GetName() == "coredns_filterlist_queries_total" {
+			found = true
+			if len(f.GetMetric()) != len(results) {
+				t.Errorf("expected %d result series, got %d", len(results), len(f.GetMetric()))
+			}
+			for _, m := range f.GetMetric() {
+				if got := m.GetCounter().GetValue(); got != 1 {
+					t.Errorf("result %v = %v, want 1", m.GetLabel(), got)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("queries_total metric not found in gathered families")
 	}
 }
 

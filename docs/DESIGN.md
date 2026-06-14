@@ -402,17 +402,25 @@ All metrics are exported with the `coredns_filterlist_` prefix.
 
 | Metric | Type | Meaning |
 |--------|------|---------|
-| `whitelist_checks_total` | Counter | Queries evaluated against the whitelist matcher |
-| `blacklist_checks_total` | Counter | Queries evaluated against the blacklist matcher |
-| `whitelist_hits_total` | Counter | Queries accepted because the whitelist matched |
-| `blacklist_hits_total` | Counter | Queries blocked because the blacklist matched |
-| `match_duration_seconds{result=...}` | Summary | End-to-end plugin matching duration |
+| `queries_total{result=...}` | Counter | One increment per query, labeled by terminal decision |
+| `match_duration_seconds{result=...}` | Histogram | End-to-end plugin matching duration, by outcome |
 
-`match_duration_seconds` uses these `result` labels:
+`queries_total` uses these `result` labels (exactly one per query, so the sum is
+the total query volume):
 
-- `accept`: whitelist matched and query continued;
-- `reject`: blacklist matched and query was blocked;
-- `pass`: no rule matched and query continued unchanged.
+- `allowlisted`: allowlist matched and the query was forwarded;
+- `forwarded`: no rule matched and the query was forwarded unchanged;
+- `blocked_denylist`: denylist matched and the query was blocked;
+- `blocked_rfc`: the query name failed the RFC 1035 / IDNA check;
+- `blocked_unlisted`: blocked by the `deny_non_allowlisted` policy.
+
+A single counter with a reason label replaces the earlier `*_checks_total` and
+`*_hits_total` counters: the checks counters carried little signal and the hits
+counters conflated three different block reasons into one series.
+
+`match_duration_seconds` is split only into the two coarse latency outcomes
+`forwarded` and `blocked`, because a blocked query short-circuits the matcher
+chain while a forwarded query traverses all of it.
 
 ### Compile and State Metrics
 
@@ -422,10 +430,14 @@ All metrics are exported with the `coredns_filterlist_` prefix.
 | `compile_duration_seconds` | Histogram | Distribution of successful directory compile durations |
 | `last_compile_timestamp_seconds` | Gauge | Timestamp of the most recent successful compile |
 | `last_compile_duration_seconds` | Gauge | Duration of the most recent successful compile |
-| `whitelist_rules` | Gauge | Current number of compiled whitelist rules |
-| `blacklist_rules` | Gauge | Current number of compiled blacklist rules |
+| `allowlist_rules` | Gauge | Current number of compiled allowlist rules |
+| `denylist_rules` | Gauge | Current number of compiled denylist rules |
+| `allowlist_states` | Gauge | States in the compiled allowlist matcher (memory/complexity proxy) |
+| `denylist_states` | Gauge | States in the compiled denylist matcher (memory/complexity proxy) |
 
-The rule gauges count compiled rules, not DFA states.
+The rule gauges count compiled rules; the state gauges expose the DFA state
+counts that are also written to the structured compile log, so operators can
+trend matcher memory without scraping logs.
 
 In addition to metrics, every compile attempt emits a structured summary log
 that includes label, directory, outcome, rule count, state count, duration, and

@@ -324,7 +324,27 @@ func getMatchDurationCount(t *testing.T, promReg *prometheus.Registry, result st
 			for _, m := range f.GetMetric() {
 				for _, l := range m.GetLabel() {
 					if l.GetName() == "result" && l.GetValue() == result {
-						return m.GetSummary().GetSampleCount()
+						return m.GetHistogram().GetSampleCount()
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func getQueriesCount(t *testing.T, promReg *prometheus.Registry, result string) float64 {
+	t.Helper()
+	families, err := promReg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range families {
+		if f.GetName() == "coredns_filterlist_queries_total" {
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "result" && l.GetValue() == result {
+						return m.GetCounter().GetValue()
 					}
 				}
 			}
@@ -355,8 +375,8 @@ func getGaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {
 	return metric.GetGauge().GetValue()
 }
 
-// TestServeDNSMatchDurationAccept verifies that operators can observe accepted-query latency in the CoreDNS plugin metrics path by asserting that whitelist hits record an accept duration sample.
-func TestServeDNSMatchDurationAccept(t *testing.T) {
+// TestServeDNSMatchDurationForwardedOnAllow verifies that operators can observe allowlisted-query latency in the CoreDNS plugin metrics path by asserting that allowlist hits record a forwarded duration sample.
+func TestServeDNSMatchDurationForwardedOnAllow(t *testing.T) {
 	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
@@ -373,13 +393,16 @@ func TestServeDNSMatchDurationAccept(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cnt := getMatchDurationCount(t, promReg, "accept"); cnt != 1 {
-		t.Errorf("expected 1 accept observation, got %d", cnt)
+	if cnt := getMatchDurationCount(t, promReg, rfmetrics.LatencyForwarded); cnt != 1 {
+		t.Errorf("expected 1 forwarded observation, got %d", cnt)
+	}
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultAllowlisted); got != 1 {
+		t.Errorf("queries{result=allowlisted} = %v, want 1", got)
 	}
 }
 
-// TestServeDNSMatchDurationReject verifies that operators can observe rejected-query latency in the CoreDNS plugin metrics path by asserting that blacklist hits record a reject duration sample.
-func TestServeDNSMatchDurationReject(t *testing.T) {
+// TestServeDNSMatchDurationBlocked verifies that operators can observe blocked-query latency in the CoreDNS plugin metrics path by asserting that denylist hits record a blocked duration sample.
+func TestServeDNSMatchDurationBlocked(t *testing.T) {
 	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
@@ -396,13 +419,16 @@ func TestServeDNSMatchDurationReject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cnt := getMatchDurationCount(t, promReg, "reject"); cnt != 1 {
-		t.Errorf("expected 1 reject observation, got %d", cnt)
+	if cnt := getMatchDurationCount(t, promReg, rfmetrics.LatencyBlocked); cnt != 1 {
+		t.Errorf("expected 1 blocked observation, got %d", cnt)
+	}
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultBlockedDenylist); got != 1 {
+		t.Errorf("queries{result=blocked_denylist} = %v, want 1", got)
 	}
 }
 
-// TestServeDNSMatchDurationPass verifies that operators can observe pass-through latency in the CoreDNS plugin metrics path by asserting that unmatched queries record a pass duration sample.
-func TestServeDNSMatchDurationPass(t *testing.T) {
+// TestServeDNSMatchDurationForwardedOnMiss verifies that operators can observe pass-through latency in the CoreDNS plugin metrics path by asserting that unmatched queries record a forwarded duration sample.
+func TestServeDNSMatchDurationForwardedOnMiss(t *testing.T) {
 	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
@@ -419,14 +445,17 @@ func TestServeDNSMatchDurationPass(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cnt := getMatchDurationCount(t, promReg, "pass"); cnt != 1 {
-		t.Errorf("expected 1 pass observation, got %d", cnt)
+	if cnt := getMatchDurationCount(t, promReg, rfmetrics.LatencyForwarded); cnt != 1 {
+		t.Errorf("expected 1 forwarded observation, got %d", cnt)
+	}
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultForwarded); got != 1 {
+		t.Errorf("queries{result=forwarded} = %v, want 1", got)
 	}
 }
 
-// TestServeDNSWhitelistHitCounter verifies that operators can count successful allow-list decisions in the CoreDNS plugin metrics path by asserting that whitelist checks and hits are both incremented on an allow match.
-func TestServeDNSWhitelistHitCounter(t *testing.T) {
-	m, _ := newMetrics(t)
+// TestServeDNSAllowlistedResultCounter verifies that operators can count successful allow-list decisions in the CoreDNS plugin metrics path by asserting that an allow match increments queries{result=allowlisted}.
+func TestServeDNSAllowlistedResultCounter(t *testing.T) {
+	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next:    next,
@@ -439,17 +468,14 @@ func TestServeDNSWhitelistHitCounter(t *testing.T) {
 	r := makeQuery("safe.example.com", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
-	if got := getCounterValue(t, m.AllowlistChecks); got != 1 {
-		t.Errorf("AllowlistChecks = %v, want 1", got)
-	}
-	if got := getCounterValue(t, m.AllowlistHits); got != 1 {
-		t.Errorf("AllowlistHits = %v, want 1", got)
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultAllowlisted); got != 1 {
+		t.Errorf("queries{result=allowlisted} = %v, want 1", got)
 	}
 }
 
-// TestServeDNSBlacklistCheckAndHitCounters verifies that operators can count deny-list decisions in the CoreDNS plugin metrics path by asserting that blacklist checks and hits are incremented after a non-whitelisted block.
-func TestServeDNSBlacklistCheckAndHitCounters(t *testing.T) {
-	m, _ := newMetrics(t)
+// TestServeDNSBlockedDenylistResultCounter verifies that operators can count deny-list decisions in the CoreDNS plugin metrics path by asserting that a denylist block increments queries{result=blocked_denylist} and leaves the allowlisted series at zero.
+func TestServeDNSBlockedDenylistResultCounter(t *testing.T) {
+	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next:    next,
@@ -463,20 +489,17 @@ func TestServeDNSBlacklistCheckAndHitCounters(t *testing.T) {
 	r := makeQuery("ads.example.com", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
-	if got := getCounterValue(t, m.AllowlistChecks); got != 1 {
-		t.Errorf("AllowlistChecks = %v, want 1", got)
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultBlockedDenylist); got != 1 {
+		t.Errorf("queries{result=blocked_denylist} = %v, want 1", got)
 	}
-	if got := getCounterValue(t, m.DenylistChecks); got != 1 {
-		t.Errorf("DenylistChecks = %v, want 1", got)
-	}
-	if got := getCounterValue(t, m.DenylistHits); got != 1 {
-		t.Errorf("DenylistHits = %v, want 1", got)
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultAllowlisted); got != 0 {
+		t.Errorf("queries{result=allowlisted} = %v, want 0", got)
 	}
 }
 
-// TestServeDNSWhitelistHitSkipsBlacklistCheck verifies that operators can trust whitelist precedence in the CoreDNS plugin metrics path by asserting that blacklist checks stay at zero when the whitelist already matched.
-func TestServeDNSWhitelistHitSkipsBlacklistCheck(t *testing.T) {
-	m, _ := newMetrics(t)
+// TestServeDNSAllowlistHitRecordsSingleOutcome verifies that operators can trust whitelist precedence in the CoreDNS plugin metrics path by asserting that an allowlist hit records only the allowlisted result and never reaches the denylist outcome.
+func TestServeDNSAllowlistHitRecordsSingleOutcome(t *testing.T) {
+	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next:    next,
@@ -490,11 +513,11 @@ func TestServeDNSWhitelistHitSkipsBlacklistCheck(t *testing.T) {
 	r := makeQuery("safe.example.com", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
-	if got := getCounterValue(t, m.AllowlistChecks); got != 1 {
-		t.Errorf("AllowlistChecks = %v, want 1", got)
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultAllowlisted); got != 1 {
+		t.Errorf("queries{result=allowlisted} = %v, want 1", got)
 	}
-	if got := getCounterValue(t, m.DenylistChecks); got != 0 {
-		t.Errorf("DenylistChecks = %v, want 0", got)
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultBlockedDenylist); got != 0 {
+		t.Errorf("queries{result=blocked_denylist} = %v, want 0", got)
 	}
 }
 
@@ -841,14 +864,14 @@ func TestServeDNSRFCAllowedByDisableRFCChecks(t *testing.T) {
 }
 
 // TestServeDNSRFCUpdatesMetrics verifies that operators can observe blocked
-// RFC-invalid queries through the standard denylist metrics.
+// RFC-invalid queries through a dedicated result label.
 //
 // This test covers metric instrumentation for the RFC precheck in ServeDNS.
 //
-// It asserts that DenylistChecks and DenylistHits are each incremented by one
-// when an RFC-invalid name is blocked by the RFC precheck.
+// It asserts that queries{result=blocked_rfc} is incremented by one when an
+// RFC-invalid name is blocked by the RFC precheck.
 func TestServeDNSRFCUpdatesMetrics(t *testing.T) {
-	m, _ := newMetrics(t)
+	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next:    next,
@@ -860,11 +883,8 @@ func TestServeDNSRFCUpdatesMetrics(t *testing.T) {
 	r := makeQuery("_bad.example.com.", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
-	if got := getCounterValue(t, m.DenylistChecks); got != 1 {
-		t.Errorf("DenylistChecks = %v, want 1", got)
-	}
-	if got := getCounterValue(t, m.DenylistHits); got != 1 {
-		t.Errorf("DenylistHits = %v, want 1", got)
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultBlockedRFC); got != 1 {
+		t.Errorf("queries{result=blocked_rfc} = %v, want 1", got)
 	}
 }
 
@@ -966,14 +986,14 @@ func TestServeDNSDenyNonAllowlistedHonorsAllowlist(t *testing.T) {
 }
 
 // TestServeDNSDenyNonAllowlistedUpdatesMetrics verifies that operators can
-// observe deny_non_allowlisted decisions through the denylist metrics.
+// observe deny_non_allowlisted decisions through a dedicated result label.
 //
 // This test covers metric instrumentation for the deny_non_allowlisted precheck.
 //
-// It asserts that DenylistChecks and DenylistHits are each incremented by one
-// for a query blocked by the deny_non_allowlisted precheck.
+// It asserts that queries{result=blocked_unlisted} is incremented by one for a
+// query blocked by the deny_non_allowlisted precheck.
 func TestServeDNSDenyNonAllowlistedUpdatesMetrics(t *testing.T) {
-	m, _ := newMetrics(t)
+	m, promReg := newMetrics(t)
 	next := &mockNextHandler{}
 	rf := &Plugin{
 		Next: next,
@@ -990,11 +1010,8 @@ func TestServeDNSDenyNonAllowlistedUpdatesMetrics(t *testing.T) {
 	r := makeQuery("other.example.com.", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
-	if got := getCounterValue(t, m.DenylistChecks); got != 1 {
-		t.Errorf("DenylistChecks = %v, want 1", got)
-	}
-	if got := getCounterValue(t, m.DenylistHits); got != 1 {
-		t.Errorf("DenylistHits = %v, want 1", got)
+	if got := getQueriesCount(t, promReg, rfmetrics.ResultBlockedUnlisted); got != 1 {
+		t.Errorf("queries{result=blocked_unlisted} = %v, want 1", got)
 	}
 }
 
