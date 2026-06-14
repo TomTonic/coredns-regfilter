@@ -182,7 +182,8 @@ Those tests assert that:
 | `max_states` | `200000` | Maximum wildcard DFA states (limits memory); set `0` to disable this cap |
 | `compile_timeout` | `30s` | Maximum compile duration |
 | `ttl` | `3600` | TTL for blocked responses (nullip) |
-| `debug` | `false` | Log per-query match details (list, name, rule source, pattern) |
+| `log_queries` | `false` | Log per-query outcome (list matched, name, rule source, pattern) at INFO level |
+| `debug` | — | Deprecated alias for `log_queries`; prefer `log_queries` in new Corefiles |
 | `invert_allowlist` | `false` | Use `\|\|domain^` instead of `@@\|\|domain^` for allowlist entries |
 | `deny_non_allowlisted` | `false` | Block every query that is not matched by the allowlist (deny-by-default mode) |
 | `disable_RFC_checks` | `false` | Disable the RFC 1035 / IDNA query-name validation precheck (default: checks are active) |
@@ -206,7 +207,8 @@ Those tests assert that:
 - `debounce`, `max_states`, and `compile_timeout` are operational safeguards for large or volatile filter sets.
 - `max_states 0` disables DFA state capping for wildcard compilation. The plugin logs a warning at startup when uncapped mode is configured.
 - List parser safety limits are enforced per file: maximum physical line length is `8192` bytes and maximum line count is `200000`. Files exceeding those limits are rejected and logged.
-- `debug` enables per-query log lines showing the matching list (allowlist or denylist), the queried name, the source file and line number, and the original rule pattern. Useful for verifying that rules behave as expected. The output appears at the `[INFO]` level in the CoreDNS log.
+- `log_queries` enables per-query log lines showing the outcome (allowlisted, forwarded, blocked), the matching list, the queried name, the source file and line number, and the original rule pattern. Useful for monitoring which queries are blocked and tuning custom allow/deny lists. The output appears at the `[INFO]` level in the CoreDNS log. Internal events such as raw filesystem notifications and DFA compile progress are logged at `[DEBUG]` level and only appear when CoreDNS is started with `--debug`.
+- `debug` is a deprecated alias for `log_queries` and is accepted for backwards compatibility. Prefer `log_queries` in new Corefiles.
 - `deny_non_allowlisted on` enables deny-by-default mode: every query that is not explicitly matched by the allowlist is blocked in the denylist phase, before the denylist matcher is consulted. Requires at least one configured allowlist to be useful. Default is `off`.
 - `disable_RFC_checks` controls the RFC 1035 + IDNA Lookup-profile query-name precheck. When `off` (the default), queries whose names violate LDH syntax, label-length limits, or IDNA encoding are blocked immediately after the `deny_non_allowlisted` check and before the denylist matcher. The implementation uses a tight scan with per-label and total-length counters on the ASCII fast path and only calls IDNA conversion when it sees an ACE-prefix label (`xn--`). Set it to `on` to skip this check for environments that host non-standard names (for example, names with underscores used by some services).
 - `matcher_mode hybrid` is the default and keeps startup and reload compile times much lower by storing literal rules in the suffix map and compiling only wildcard rules into the DFA.

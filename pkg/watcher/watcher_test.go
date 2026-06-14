@@ -15,6 +15,7 @@ type testLogger struct {
 	msgs []string
 }
 
+func (l *testLogger) Debugf(format string, args ...interface{}) { l.log(fmt.Sprintf(format, args...)) }
 func (l *testLogger) Warnf(format string, args ...interface{})  { l.log(fmt.Sprintf(format, args...)) }
 func (l *testLogger) Infof(format string, args ...interface{})  { l.log(fmt.Sprintf(format, args...)) }
 func (l *testLogger) Errorf(format string, args ...interface{}) { l.log(fmt.Sprintf(format, args...)) }
