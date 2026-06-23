@@ -164,8 +164,11 @@ an RFC 1035 + IDNA Lookup-profile query-name precheck. The precheck uses a
 single ASCII scan with nested label loops and two counters (current label
 length and total name length) to enforce the 63/253 byte limits and LDH label
 rules. It only performs an IDNA round-trip when the scan observes an ACE label
-prefix (`xn--`). The check runs after the `deny_non_allowlisted` check and
-before denylist matcher lookups.
+prefix (`xn--`). RFC 8553 underscored labels (a single leading underscore per
+label, as used by DNS-SD, DKIM, DMARC, and SRV names) are accepted unless
+`strict_rfc_names` is `on`, which enforces strict RFC 1035 LDH validation. The
+check runs after the `deny_non_allowlisted` check and before denylist matcher
+lookups.
 
 When `deny_non_allowlisted` is `on`, the denylist phase blocks every allowlist
 miss before the RFC precheck and the denylist matcher are consulted.

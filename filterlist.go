@@ -56,6 +56,12 @@ type ActionConfig struct {
 // syntax or the IDNA Lookup profile are blocked before the denylist matcher is
 // consulted.
 //
+// StrictRFCNames, when true, tightens the RFC 1035 query-name validation so
+// that it rejects RFC 8553 underscored labels (DNS-SD per RFC 6763, DKIM,
+// DMARC, SRV, e.g. "_dns-sd._udp.example.com"). When false (the default) such
+// names are accepted by the RFC check. It has no effect when DisableRFCChecks
+// is true, since the whole RFC validation step is then skipped.
+//
 // MatcherMode selects how compiled rules are represented at runtime.
 // "hybrid" (the default) keeps literal domains in a suffix map and compiles
 // only wildcard patterns into a DFA. "dfa" compiles all rules into one DFA,
@@ -74,6 +80,7 @@ type Config struct {
 	InvertAllowlist    bool
 	DenyNonAllowlisted bool
 	DisableRFCChecks   bool
+	StrictRFCNames     bool
 	MatcherMode        matcher.Mode
 }
 
@@ -212,9 +219,11 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	//    allowlist is blocked immediately without consulting the denylist.
 	// 2. RFC / IDNA check — when enabled (disable_RFC_checks is false), queries
 	//    whose names violate RFC 1035 LDH syntax or the IDNA Lookup profile are
-	//    blocked. This check runs after deny_non_allowlisted so that an enabled
-	//    deny_non_allowlisted can short-circuit the (slightly more expensive)
-	//    RFC validation for names that would be blocked anyway.
+	//    blocked. RFC 8553 underscored labels (DNS-SD, DKIM, DMARC, SRV) are
+	//    accepted unless strict_rfc_names is set. This check runs after
+	//    deny_non_allowlisted so that an enabled deny_non_allowlisted can
+	//    short-circuit the (slightly more expensive) RFC validation for names
+	//    that would be blocked anyway.
 	if rf.Config.DenyNonAllowlisted {
 		rf.recordOutcome(metrics.ResultBlockedUnlisted, start)
 		if rf.Config.LogQueries {
@@ -223,7 +232,7 @@ func (rf *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 		return rf.respondBlocked(w, r, qname, qtype)
 	}
 
-	if !rf.Config.DisableRFCChecks && !isStrictDNSQueryName(qname) {
+	if !rf.Config.DisableRFCChecks && !isStrictDNSQueryName(qname, !rf.Config.StrictRFCNames) {
 		rf.recordOutcome(metrics.ResultBlockedRFC, start)
 		if rf.Config.LogQueries {
 			log.Infof("denylist precheck blocked name=%s reason=RFC_name_violation", name)
