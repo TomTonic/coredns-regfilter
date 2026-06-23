@@ -410,6 +410,61 @@ func TestParseConfigDenylistPrecheckDefaults(t *testing.T) {
 	if cfg.DisableRFCChecks {
 		t.Error("expected DisableRFCChecks=false by default (RFC checks active)")
 	}
+	if cfg.StrictRFCNames {
+		t.Error("expected StrictRFCNames=false by default (DNS-SD names accepted)")
+	}
+}
+
+// TestParseConfigStrictRFCNamesDirective verifies that operators can toggle the
+// DNS-SD allowance in the RFC precheck via the strict_rfc_names directive.
+//
+// This test covers the plugin Corefile parsing for the strict_rfc_names switch
+// added for issue #29.
+//
+// It asserts that "on" sets StrictRFCNames and "off" leaves it at the default,
+// and that an unsupported boolean value produces an error.
+func TestParseConfigStrictRFCNamesDirective(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		wantStrict     bool
+		wantParseError bool
+	}{
+		{
+			name:       "on enables",
+			input:      "filterlist {\n\t\t\t\tdenylist_dir /tmp/bl\n\t\t\t\tstrict_rfc_names on\n\t\t\t}",
+			wantStrict: true,
+		},
+		{
+			name:       "off keeps default",
+			input:      "filterlist {\n\t\t\t\tdenylist_dir /tmp/bl\n\t\t\t\tstrict_rfc_names off\n\t\t\t}",
+			wantStrict: false,
+		},
+		{
+			name:           "invalid value errors",
+			input:          "filterlist {\n\t\t\t\tdenylist_dir /tmp/bl\n\t\t\t\tstrict_rfc_names maybe\n\t\t\t}",
+			wantParseError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := caddy.NewTestController("dns", tt.input)
+			cfg, err := parseConfig(c)
+			if tt.wantParseError {
+				if err == nil {
+					t.Fatal("expected parseConfig error for invalid strict_rfc_names value")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseConfig error: %v", err)
+			}
+			if cfg.StrictRFCNames != tt.wantStrict {
+				t.Errorf("StrictRFCNames = %v, want %v", cfg.StrictRFCNames, tt.wantStrict)
+			}
+		})
+	}
 }
 
 // TestParseConfigDenylistPrecheckDirectives verifies that operators can

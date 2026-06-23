@@ -26,10 +26,18 @@ const (
 // to validate the punycode encoding. Names without an ACE-prefixed label
 // return directly after the ASCII scan succeeds.
 //
+// When allowUnderscoreLabels is true, underscored labels per RFC 8553 (for
+// example the DNS-SD names of RFC 6763 such as "_dns-sd._udp", and the
+// well-known "_dmarc", "_domainkey", and SRV "_service._proto" labels) are
+// accepted: an underscore is permitted only as the first byte of a label,
+// after which normal LDH syntax applies. When false, any underscore is
+// rejected as a strict RFC 1035 LDH violation.
+//
 // Returns true only when qname is valid. Empty labels, labels that start or end
-// with a hyphen, labels longer than 63 octets, names longer than 253 octets,
-// non-LDH ASCII bytes, and invalid ACE labels all return false.
-func isStrictDNSQueryName(qname string) bool {
+// with a hyphen, mid-label underscores (and any underscore when
+// allowUnderscoreLabels is false), labels longer than 63 octets, names longer
+// than 253 octets, non-LDH ASCII bytes, and invalid ACE labels all return false.
+func isStrictDNSQueryName(qname string, allowUnderscoreLabels bool) bool {
 	if qname == "." {
 		return true
 	}
@@ -45,7 +53,7 @@ func isStrictDNSQueryName(qname string) bool {
 		return false
 	}
 
-	needsIDNACheck, ok := validateStrictDNSASCIIName(qname, end)
+	needsIDNACheck, ok := validateStrictDNSASCIIName(qname, end, allowUnderscoreLabels)
 	if !ok {
 		return false
 	}
@@ -61,11 +69,13 @@ func isStrictDNSQueryName(qname string) bool {
 // for the first end bytes of name.
 //
 // The function accepts ASCII letters in either case, digits, hyphens, and dot
-// separators. It returns whether an IDNA ACE label was seen and whether the
-// scanned name is structurally valid. The implementation uses an outer loop for
-// labels and an inner loop for bytes within each label so total and per-label
-// lengths are tracked without slicing or allocations.
-func validateStrictDNSASCIIName(name string, end int) (bool, bool) {
+// separators. When allowUnderscoreLabels is true it additionally accepts a
+// single leading underscore per label for RFC 8553 underscored names (DNS-SD,
+// DKIM, DMARC, SRV). It returns whether an IDNA ACE label was seen and whether
+// the scanned name is structurally valid. The implementation uses an outer loop
+// for labels and an inner loop for bytes within each label so total and
+// per-label lengths are tracked without slicing or allocations.
+func validateStrictDNSASCIIName(name string, end int, allowUnderscoreLabels bool) (bool, bool) {
 	totalLen := 0
 	needsIDNACheck := false
 
@@ -75,10 +85,16 @@ func validateStrictDNSASCIIName(name string, end int) (bool, bool) {
 
 		for index := labelStart; index < end && name[index] != '.'; index++ {
 			current := asciiLower(name[index])
-			if !isStrictDNSLabelByte(current) {
+			switch {
+			case allowUnderscoreLabels && current == '_':
+				// RFC 8553 underscored labels: the underscore is only
+				// valid as the first byte of a label (e.g. _dns-sd, _dmarc).
+				if labelLen != 0 {
+					return false, false
+				}
+			case !isStrictDNSLabelByte(current):
 				return false, false
-			}
-			if labelLen == 0 && current == '-' {
+			case labelLen == 0 && current == '-':
 				return false, false
 			}
 

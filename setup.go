@@ -228,6 +228,12 @@ func parseDirective(c *caddy.Controller, cfg *Config) error {
 			return err
 		}
 		cfg.DisableRFCChecks = enabled
+	case "strict_rfc_names":
+		enabled, err := parseBool(c, "strict_rfc_names")
+		if err != nil {
+			return err
+		}
+		cfg.StrictRFCNames = enabled
 	case "matcher_mode":
 		value, err := nextArgValue(c)
 		if err != nil {
