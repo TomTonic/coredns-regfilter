@@ -3,5 +3,12 @@
   "description": "This renovate.json references the default configuration for Go projects provided by TomTonic. It ensures that all Go dependencies are kept up to date according to the best practices defined in the referenced configuration.",
   "extends": [
     "github>TomTonic/go-project-defaults"
+  ],
+  "packageRules": [
+    {
+      "matchPackageNames": ["github.com/coredns/caddy"],
+      "enabled": false,
+      "description": "coredns/caddy is a frozen Caddy v1 fork maintained exclusively for CoreDNS compatibility; it has no independently releasable updates."
+    }
   ]
 }
