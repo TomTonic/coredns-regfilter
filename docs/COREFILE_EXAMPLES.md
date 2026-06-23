@@ -227,6 +227,27 @@ want the strictest possible validation, two switches are available:
 }
 ```
 
+> **Caution — `strict_rfc_names on` is a global switch.** It blocks *all*
+> underscored labels across every zone. Concretely, this prevents:
+>
+> - **DNS-SD** device and service discovery (RFC 6763) — e.g.
+>   `lb._dns-sd._udp.local`, `_printer._tcp.local`
+> - **DMARC** lookups — `_dmarc.example.com`
+> - **DKIM** key lookups — `selector1._domainkey.example.com`
+> - **SRV records** — `_ldap._tcp.example.com`, `_sip._tls.example.com`
+> - Any other RFC 8553 underscored name
+>
+> If you only want to block underscored names for a **specific domain or
+> network** (e.g. a particular bad actor's zone), add explicit denylist rules
+> instead of using this switch:
+>
+> ```
+> # denylist file — block DNS-SD enumeration for home.arpa only
+> ||_dns-sd._udp.home.arpa^
+> ```
+>
+> That way global DNS-SD and DMARC/DKIM resolution stays intact.
+
 Leave `disable_RFC_checks` unset (or set it to `off`) to keep the check active,
 and leave `strict_rfc_names` unset (or `off`) to keep accepting DNS-SD names.
 
