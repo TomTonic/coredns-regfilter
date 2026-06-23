@@ -195,9 +195,13 @@ By default the plugin blocks queries whose names violate RFC 1035 LDH syntax or
 the IDNA Lookup profile (RFCs 5890–5894). This precheck runs inside the
 denylist phase, after `deny_non_allowlisted` and before the denylist matcher.
 
-For environments that intentionally serve non-standard names (for example,
-SRV-style names with underscores or legacy hosts with digits at label
-boundaries), the check can be disabled:
+RFC 8553 underscored labels are accepted by default, so DNS-SD service
+discovery names (RFC 6763, e.g. `lb._dns-sd._udp.example.com`) as well as
+`_dmarc`, `_domainkey`, and SRV `_service._proto` names resolve normally
+without tripping the check.
+
+For environments that intentionally serve other non-standard names, or that
+want the strictest possible validation, two switches are available:
 
 ```txt
 . {
@@ -205,13 +209,26 @@ boundaries), the check can be disabled:
         allowlist_dir /etc/coredns/allowlist.d
         denylist_dir /etc/coredns/denylist.d
         action nxdomain
-        disable_RFC_checks on
+        disable_RFC_checks on   # skip the precheck entirely
     }
     forward . 8.8.8.8
 }
 ```
 
-Leave `disable_RFC_checks` unset (or set it to `off`) to keep the check active.
+```txt
+. {
+    filterlist {
+        allowlist_dir /etc/coredns/allowlist.d
+        denylist_dir /etc/coredns/denylist.d
+        action nxdomain
+        strict_rfc_names on     # keep the precheck, but reject underscored labels
+    }
+    forward . 8.8.8.8
+}
+```
+
+Leave `disable_RFC_checks` unset (or set it to `off`) to keep the check active,
+and leave `strict_rfc_names` unset (or `off`) to keep accepting DNS-SD names.
 
 ## Deny by Default — Block Non-Allowlisted Names
 

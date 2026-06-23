@@ -840,8 +840,8 @@ func TestServeDNSLogQueriesNoMatch(t *testing.T) {
 //
 // This test covers the denylist-phase RFC precheck in ServeDNS.
 //
-// It asserts that a query for a name with an underscore label returns NXDOMAIN
-// and does not reach the next handler.
+// It asserts that a query for a name with a leading-hyphen label returns
+// NXDOMAIN and does not reach the next handler.
 func TestServeDNSRFCBlocksInvalidName(t *testing.T) {
 	next := &mockNextHandler{}
 	rf := &Plugin{
@@ -853,7 +853,7 @@ func TestServeDNSRFCBlocksInvalidName(t *testing.T) {
 	}
 
 	w := newMockWriter()
-	r := makeQuery("_bad.example.com.", dns.TypeA)
+	r := makeQuery("-bad.example.com.", dns.TypeA)
 
 	code, err := rf.ServeDNS(context.Background(), w, r)
 	if err != nil {
@@ -873,7 +873,7 @@ func TestServeDNSRFCBlocksInvalidName(t *testing.T) {
 //
 // This test covers the disable_RFC_checks config switch in ServeDNS.
 //
-// It asserts that a query for an RFC-invalid name (underscore label) reaches
+// It asserts that a query for an RFC-invalid name (leading-hyphen label) reaches
 // the next handler when disable_RFC_checks is true.
 func TestServeDNSRFCAllowedByDisableRFCChecks(t *testing.T) {
 	next := &mockNextHandler{}
@@ -886,7 +886,7 @@ func TestServeDNSRFCAllowedByDisableRFCChecks(t *testing.T) {
 	}
 
 	w := newMockWriter()
-	r := makeQuery("_srv._tcp.example.com.", dns.TypeA)
+	r := makeQuery("-bad.example.com.", dns.TypeA)
 
 	_, err := rf.ServeDNS(context.Background(), w, r)
 	if err != nil {
@@ -914,11 +914,77 @@ func TestServeDNSRFCUpdatesMetrics(t *testing.T) {
 	}
 
 	w := newMockWriter()
-	r := makeQuery("_bad.example.com.", dns.TypeA)
+	r := makeQuery("-bad.example.com.", dns.TypeA)
 	_, _ = rf.ServeDNS(context.Background(), w, r)
 
 	if got := getQueriesCount(t, promReg, rfmetrics.ResultBlockedRFC); got != 1 {
 		t.Errorf("queries{result=blocked_rfc} = %v, want 1", got)
+	}
+}
+
+// TestServeDNSAcceptsDNSSDName verifies that DNS-SD service discovery names
+// (RFC 6763 / RFC 8553 underscored labels) resolve normally with RFC checks
+// active and strict_rfc_names at its default, addressing the false RFC_name
+// violation reported in issue #29.
+//
+// This test covers the DNS-SD allowance in the denylist-phase RFC precheck.
+//
+// It asserts that a query for "lb._dns-sd._udp.example.com." reaches the next
+// handler instead of being blocked.
+func TestServeDNSAcceptsDNSSDName(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:           ActionConfig{Mode: "nxdomain"},
+			DisableRFCChecks: false, // RFC checks active (default)
+			StrictRFCNames:   false, // DNS-SD names accepted (default)
+		},
+	}
+
+	w := newMockWriter()
+	r := makeQuery("lb._dns-sd._udp.example.com.", dns.TypeA)
+
+	_, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.called {
+		t.Error("expected DNS-SD name to reach next handler when strict_rfc_names is off")
+	}
+}
+
+// TestServeDNSBlocksDNSSDNameWhenStrict verifies that operators can opt into
+// strict RFC 1035 validation that rejects underscored DNS-SD names by setting
+// strict_rfc_names.
+//
+// This test covers the strict_rfc_names config switch in the RFC precheck.
+//
+// It asserts that a DNS-SD name returns NXDOMAIN and does not reach the next
+// handler when strict_rfc_names is on while RFC checks remain active.
+func TestServeDNSBlocksDNSSDNameWhenStrict(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action:           ActionConfig{Mode: "nxdomain"},
+			DisableRFCChecks: false, // RFC checks active
+			StrictRFCNames:   true,  // underscored labels rejected
+		},
+	}
+
+	w := newMockWriter()
+	r := makeQuery("lb._dns-sd._udp.example.com.", dns.TypeA)
+
+	code, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN for DNS-SD name when strict_rfc_names is on, got %d", code)
+	}
+	if next.called {
+		t.Error("next handler must not be called for blocked DNS-SD name")
 	}
 }
 
