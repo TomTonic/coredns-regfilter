@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Read(//Users/tom/go/pkg/mod/github.com/miekg/dns@v1.1.72/**)",
+      "Bash(gofmt -l filterlist.go filterlist_test.go)"
     ]
   }
 }

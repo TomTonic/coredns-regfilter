@@ -282,15 +282,18 @@ func (rf *Plugin) respondBlocked(w dns.ResponseWriter, r *dns.Msg, qname string,
 	m.SetReply(r)
 	m.Authoritative = true
 
+	ttl := rf.Config.Action.TTL
+	if ttl == 0 {
+		ttl = 3600
+	}
+
 	switch rf.Config.Action.Mode {
 	case "refuse":
+		// REFUSED is a hard rejection, not a statement about the name's
+		// contents, so it carries no answer and no negative-caching SOA.
 		m.Rcode = dns.RcodeRefused
 	case "nullip":
 		m.Rcode = dns.RcodeSuccess
-		ttl := rf.Config.Action.TTL
-		if ttl == 0 {
-			ttl = 3600
-		}
 		switch qtype {
 		case dns.TypeA:
 			ip := rf.Config.Action.NullIPv4
@@ -310,16 +313,26 @@ func (rf *Plugin) respondBlocked(w dns.ResponseWriter, r *dns.Msg, qname string,
 				Hdr:  dns.RR_Header{Name: qname, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
 				AAAA: ip,
 			})
+		case dns.TypeHTTPS, dns.TypeSVCB:
+			// Browsers query HTTPS (type 65) in parallel with A/AAAA. Rather
+			// than NODATA (which relies on A/AAAA fallback), synthesize a
+			// ServiceMode record whose ipv4hint/ipv6hint steer the client to
+			// the sinkhole addresses directly. See issue #38.
+			m.Answer = append(m.Answer, rf.syntheticSVCB(qname, qtype, ttl))
+		default:
+			// For all other query types (PTR, TXT, MX, SRV, ...) we return
+			// NODATA: RcodeSuccess with an empty answer section. Returning
+			// NXDOMAIN would assert the whole name does not exist (RFC 8020)
+			// and, in RFC 8020-aware resolvers, could negative-cache the name
+			// and poison the A/AAAA sinkhole answers. The SOA below bounds how
+			// long the NODATA is negative-cached (RFC 2308). See issue #38.
+			addNegativeCachingSOA(m, qname, ttl)
 		}
-		// For non-A/AAAA query types (PTR, HTTPS/SVCB, TXT, MX, SRV, ...)
-		// we intentionally leave Rcode as RcodeSuccess with an empty answer
-		// section, i.e. NODATA. Returning NXDOMAIN here would assert that the
-		// whole name does not exist (RFC 8020) and, in RFC 8020-aware
-		// resolvers, could negative-cache the name and poison the A/AAAA
-		// sinkhole answers. NODATA keeps a consistent "name exists, no record
-		// of this type" semantics across all query types. See issue #38.
 	default: // "nxdomain" is the default
 		m.Rcode = dns.RcodeNameError
+		// Attach an SOA so resolvers know how long to negative-cache the
+		// NXDOMAIN (RFC 2308) instead of re-querying aggressively.
+		addNegativeCachingSOA(m, qname, ttl)
 	}
 
 	err := w.WriteMsg(m)
@@ -327,6 +340,72 @@ func (rf *Plugin) respondBlocked(w dns.ResponseWriter, r *dns.Msg, qname string,
 		return dns.RcodeServerFailure, err
 	}
 	return m.Rcode, nil
+}
+
+// syntheticSOAMName and syntheticSOARName are placeholder hostnames for the
+// authority-section SOA of synthesized negative responses. They live under the
+// reserved .invalid TLD (RFC 6761) so they can never resolve or be mistaken for
+// a real zone. Only the SOA's TTL and Minimum fields carry meaning here; they
+// are set to the configured block TTL to bound negative caching (RFC 2308).
+const (
+	syntheticSOAMName = "fake-for-negative-caching.filterlist.invalid."
+	syntheticSOARName = "hostmaster.filterlist.invalid."
+)
+
+// addNegativeCachingSOA appends an authority-section SOA so resolvers can
+// negative-cache an NXDOMAIN or NODATA answer for ttl seconds (RFC 2308).
+// Without it the negative-cache lifetime is undefined and some stub resolvers
+// (mDNSResponder, systemd-resolved) re-query aggressively instead of backing
+// off. The SOA owner is the queried name itself, treated as the apex of a
+// synthetic zone, so caching is scoped to exactly this blocked name.
+func addNegativeCachingSOA(m *dns.Msg, qname string, ttl uint32) {
+	m.Ns = append(m.Ns, &dns.SOA{
+		Hdr:     dns.RR_Header{Name: qname, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: ttl},
+		Ns:      syntheticSOAMName,
+		Mbox:    syntheticSOARName,
+		Serial:  1,
+		Refresh: ttl,
+		Retry:   ttl,
+		Expire:  ttl,
+		Minttl:  ttl,
+	})
+}
+
+// syntheticSVCB builds an HTTPS (type 65) or SVCB (type 64) record for a blocked
+// name whose ipv4hint/ipv6hint point at the configured sinkhole addresses. It is
+// a ServiceMode record (Priority 1, Target ".") anchored at the owner name, so a
+// client with no usable hint still resolves A/AAAA at the same name and reaches
+// the sinkhole. Hints are only attached when the configured address matches the
+// expected family, so a misconfiguration cannot produce an unpackable record.
+func (rf *Plugin) syntheticSVCB(qname string, rrtype uint16, ttl uint32) dns.RR {
+	var hints []dns.SVCBKeyValue
+
+	v4 := rf.Config.Action.NullIPv4
+	if v4 == nil {
+		v4 = net.IPv4zero
+	}
+	if v4b := v4.To4(); v4b != nil {
+		hints = append(hints, &dns.SVCBIPv4Hint{Hint: []net.IP{v4b}})
+	}
+
+	v6 := rf.Config.Action.NullIPv6
+	if v6 == nil {
+		v6 = net.IPv6zero
+	}
+	if v6b := v6.To16(); v6b != nil && v6.To4() == nil {
+		hints = append(hints, &dns.SVCBIPv6Hint{Hint: []net.IP{v6b}})
+	}
+
+	svcb := dns.SVCB{
+		Hdr:      dns.RR_Header{Name: qname, Rrtype: rrtype, Class: dns.ClassINET, Ttl: ttl},
+		Priority: 1,
+		Target:   ".",
+		Value:    hints,
+	}
+	if rrtype == dns.TypeHTTPS {
+		return &dns.HTTPS{SVCB: svcb}
+	}
+	return &svcb
 }
 
 // normalizeName lowercases the DNS name and strips the trailing root dot.
