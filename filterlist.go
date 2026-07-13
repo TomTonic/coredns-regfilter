@@ -310,10 +310,14 @@ func (rf *Plugin) respondBlocked(w dns.ResponseWriter, r *dns.Msg, qname string,
 				Hdr:  dns.RR_Header{Name: qname, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
 				AAAA: ip,
 			})
-		default:
-			// For non-A/AAAA queries, return NXDOMAIN
-			m.Rcode = dns.RcodeNameError
 		}
+		// For non-A/AAAA query types (PTR, HTTPS/SVCB, TXT, MX, SRV, ...)
+		// we intentionally leave Rcode as RcodeSuccess with an empty answer
+		// section, i.e. NODATA. Returning NXDOMAIN here would assert that the
+		// whole name does not exist (RFC 8020) and, in RFC 8020-aware
+		// resolvers, could negative-cache the name and poison the A/AAAA
+		// sinkhole answers. NODATA keeps a consistent "name exists, no record
+		// of this type" semantics across all query types. See issue #38.
 	default: // "nxdomain" is the default
 		m.Rcode = dns.RcodeNameError
 	}

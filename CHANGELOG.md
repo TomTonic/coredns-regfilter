@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`action nullip` now returns NODATA instead of NXDOMAIN for non-A/AAAA queries (#38)**: Previously `nullip` synthesized `A`/`AAAA` sinkhole answers but replied with NXDOMAIN for all other query types (PTR, HTTPS/SVCB, TXT, MX, SRV, ...). NXDOMAIN asserts the whole name is nonexistent (RFC 8020), so RFC 8020-aware resolvers could negative-cache the name and poison the A/AAAA sinkhole answers (browsers query HTTPS/SVCB in parallel with A/AAAA), and some stub resolvers re-queried aggressively instead of backing off. `nullip` now returns an empty `NOERROR` response (NODATA) for those types, giving consistent "name exists, no record of this type" semantics. The `nxdomain` and `refuse` actions are unchanged.
+
 ### Changed
 - **Metrics overhaul (breaking)**: Reworked the Prometheus metric set for clearer operational signal.
   - Added `coredns_filterlist_queries_total{result=...}`, a single counter incremented exactly once per query. The `result` label distinguishes `allowlisted`, `forwarded`, `blocked_denylist`, `blocked_rfc`, and `blocked_unlisted`, so block volume can now be broken down by reason.

@@ -177,6 +177,96 @@ func TestServeDNSBlacklistNullIP(t *testing.T) {
 	}
 }
 
+// TestServeDNSBlacklistNullIPNODATA verifies that, for the nullip action,
+// blocked names return NODATA (empty NOERROR) for non-A/AAAA query types
+// instead of NXDOMAIN. Returning NXDOMAIN would assert the whole name is
+// nonexistent (RFC 8020) and could poison the A/AAAA sinkhole answers. See #38.
+func TestServeDNSBlacklistNullIPNODATA(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action: ActionConfig{
+				Mode:     "nullip",
+				NullIPv4: net.IPv4zero,
+				NullIPv6: net.IPv6zero,
+				TTL:      60,
+			},
+		},
+	}
+	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))
+
+	for _, qtype := range []uint16{dns.TypeHTTPS, dns.TypeSVCB, dns.TypePTR, dns.TypeTXT, dns.TypeMX, dns.TypeSRV} {
+		w := newMockWriter()
+		r := makeQuery("ads.example.com", qtype)
+		code, err := rf.ServeDNS(context.Background(), w, r)
+		if err != nil {
+			t.Fatalf("qtype %d: %v", qtype, err)
+		}
+		if next.called {
+			t.Errorf("qtype %d: next handler should not be called for blocked query", qtype)
+		}
+		if code != dns.RcodeSuccess {
+			t.Errorf("qtype %d: expected NOERROR (NODATA), got rcode %d", qtype, code)
+		}
+		if w.msg == nil {
+			t.Fatalf("qtype %d: no response written", qtype)
+		}
+		if w.msg.Rcode != dns.RcodeSuccess {
+			t.Errorf("qtype %d: expected message rcode NOERROR, got %d", qtype, w.msg.Rcode)
+		}
+		if len(w.msg.Answer) != 0 {
+			t.Errorf("qtype %d: expected empty answer section (NODATA), got %d records", qtype, len(w.msg.Answer))
+		}
+	}
+}
+
+// TestServeDNSBlacklistNullIPConsistentRcode verifies that, for the nullip
+// action, every query type for a blocked name is answered with NOERROR: A/AAAA
+// carry the sinkhole records while all other types are NODATA. No query type
+// receives NXDOMAIN, so an RFC 8020-aware resolver cannot negative-cache the
+// name. See #38.
+func TestServeDNSBlacklistNullIPConsistentRcode(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action: ActionConfig{
+				Mode:     "nullip",
+				NullIPv4: net.IPv4zero,
+				NullIPv6: net.IPv6zero,
+				TTL:      60,
+			},
+		},
+	}
+	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))
+
+	cases := []struct {
+		qtype       uint16
+		wantAnswers int
+	}{
+		{dns.TypeA, 1},
+		{dns.TypeAAAA, 1},
+		{dns.TypeHTTPS, 0},
+		{dns.TypePTR, 0},
+		{dns.TypeTXT, 0},
+	}
+	for _, tc := range cases {
+		w := newMockWriter()
+		r := makeQuery("ads.example.com", tc.qtype)
+		code, err := rf.ServeDNS(context.Background(), w, r)
+		if err != nil {
+			t.Fatalf("qtype %d: %v", tc.qtype, err)
+		}
+		if code != dns.RcodeSuccess {
+			t.Errorf("qtype %d: expected NOERROR across all types, got rcode %d", tc.qtype, code)
+		}
+		if got := len(w.msg.Answer); got != tc.wantAnswers {
+			t.Errorf("qtype %d: expected %d answer records, got %d", tc.qtype, tc.wantAnswers, got)
+		}
+	}
+}
+
 // TestServeDNSBlacklistRefuse verifies that blocked users can receive REFUSED responses in the CoreDNS plugin path by asserting that a blacklist hit returns dns.RcodeRefused.
 func TestServeDNSBlacklistRefuse(t *testing.T) {
 	next := &mockNextHandler{}
