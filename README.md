@@ -201,7 +201,7 @@ Those tests assert that:
 - Every initial load and hot-reload writes a detailed compile summary to the CoreDNS log, including directory, outcome, rule count, state count, duration, and any error.
 - `action nxdomain` returns NXDOMAIN for blocked queries.
 - `action refuse` returns REFUSED for blocked queries.
-- `action nullip` returns synthetic `A` and `AAAA` answers for address lookups, and falls back to NXDOMAIN for other query types.
+- `action nullip` returns synthetic `A` and `AAAA` answers for address lookups, and an empty `NOERROR` response (NODATA) for other query types (PTR, HTTPS/SVCB, TXT, MX, SRV, ...). NODATA keeps consistent "name exists, no record of this type" semantics: unlike NXDOMAIN it does not assert (per RFC 8020) that the whole name is nonexistent, so RFC 8020-aware resolvers cannot negative-cache the name and thereby poison the A/AAAA sinkhole answers (browsers query HTTPS/SVCB in parallel with A/AAAA).
 - `nullip` configures the IPv4 sinkhole address.
 - `nullip6` configures the IPv6 sinkhole address.
 - `ttl` is only relevant for `nullip` answers.
