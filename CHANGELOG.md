@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`action nullip` now returns NODATA instead of NXDOMAIN for non-A/AAAA queries (#38)**: Previously `nullip` synthesized `A`/`AAAA` sinkhole answers but replied with NXDOMAIN for all other query types (PTR, HTTPS/SVCB, TXT, MX, SRV, ...). NXDOMAIN asserts the whole name is nonexistent (RFC 8020), so RFC 8020-aware resolvers could negative-cache the name and poison the A/AAAA sinkhole answers (browsers query HTTPS/SVCB in parallel with A/AAAA), and some stub resolvers re-queried aggressively instead of backing off. `nullip` now returns an empty `NOERROR` response (NODATA) for those types, giving consistent "name exists, no record of this type" semantics. The `nxdomain` and `refuse` actions are unchanged.
+
+### Added
+- **Negative-caching SOA on NXDOMAIN and NODATA responses (follow-up to #38)**: Blocked responses that carry no answer — the `nxdomain` action and the `nullip` NODATA replies — now include an authority-section SOA (RFC 2308) whose TTL and Minimum are set to the configured `ttl`. Without it the negative-cache lifetime was undefined, so some stub resolvers re-queried aggressively instead of backing off. `refuse` responses deliberately carry no SOA. The `ttl` option therefore now also governs the negative-caching lifetime of `nxdomain`/NODATA responses, not just `nullip` answers.
+- **Synthesized HTTPS/SVCB sinkhole records for `nullip` (follow-up to #38)**: `HTTPS` (type 65) and `SVCB` (type 64) queries for a blocked name now return a ServiceMode record whose `ipv4hint`/`ipv6hint` point at the configured sinkhole addresses, instead of NODATA. Browsers query HTTPS in parallel with A/AAAA, so this steers them directly to the sinkhole rather than relying on A/AAAA fallback.
+
 ### Changed
 - **Metrics overhaul (breaking)**: Reworked the Prometheus metric set for clearer operational signal.
   - Added `coredns_filterlist_queries_total{result=...}`, a single counter incremented exactly once per query. The `result` label distinguishes `allowlisted`, `forwarded`, `blocked_denylist`, `blocked_rfc`, and `blocked_unlisted`, so block volume can now be broken down by reason.

@@ -177,6 +177,242 @@ func TestServeDNSBlacklistNullIP(t *testing.T) {
 	}
 }
 
+// TestServeDNSBlacklistNullIPNODATA verifies that, for the nullip action,
+// blocked names return NODATA (empty NOERROR) for plain non-address query types
+// instead of NXDOMAIN, and that the response carries an authority-section SOA so
+// resolvers can negative-cache it (RFC 2308). Returning NXDOMAIN would assert
+// the whole name is nonexistent (RFC 8020) and could poison the A/AAAA sinkhole
+// answers. See #38.
+func TestServeDNSBlacklistNullIPNODATA(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action: ActionConfig{
+				Mode:     "nullip",
+				NullIPv4: net.IPv4zero,
+				NullIPv6: net.IPv6zero,
+				TTL:      60,
+			},
+		},
+	}
+	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))
+
+	for _, qtype := range []uint16{dns.TypePTR, dns.TypeTXT, dns.TypeMX, dns.TypeSRV} {
+		w := newMockWriter()
+		r := makeQuery("ads.example.com", qtype)
+		code, err := rf.ServeDNS(context.Background(), w, r)
+		if err != nil {
+			t.Fatalf("qtype %d: %v", qtype, err)
+		}
+		if next.called {
+			t.Errorf("qtype %d: next handler should not be called for blocked query", qtype)
+		}
+		if code != dns.RcodeSuccess {
+			t.Errorf("qtype %d: expected NOERROR (NODATA), got rcode %d", qtype, code)
+		}
+		if w.msg == nil {
+			t.Fatalf("qtype %d: no response written", qtype)
+		}
+		if w.msg.Rcode != dns.RcodeSuccess {
+			t.Errorf("qtype %d: expected message rcode NOERROR, got %d", qtype, w.msg.Rcode)
+		}
+		if len(w.msg.Answer) != 0 {
+			t.Errorf("qtype %d: expected empty answer section (NODATA), got %d records", qtype, len(w.msg.Answer))
+		}
+		assertNegativeCachingSOA(t, w.msg, "ads.example.com.", 60)
+	}
+}
+
+// TestServeDNSBlacklistNullIPSVCB verifies that, for the nullip action, HTTPS
+// (type 65) and SVCB (type 64) queries for a blocked name return a synthesized
+// ServiceMode record whose ipv4hint/ipv6hint point at the sinkhole addresses,
+// so browsers that query HTTPS in parallel with A/AAAA are steered to the
+// sinkhole rather than relying on A/AAAA fallback. See #38.
+func TestServeDNSBlacklistNullIPSVCB(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action: ActionConfig{
+				Mode:     "nullip",
+				NullIPv4: net.IPv4(10, 0, 0, 1),
+				NullIPv6: net.ParseIP("::1"),
+				TTL:      60,
+			},
+		},
+	}
+	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))
+
+	for _, qtype := range []uint16{dns.TypeHTTPS, dns.TypeSVCB} {
+		w := newMockWriter()
+		r := makeQuery("ads.example.com", qtype)
+		code, err := rf.ServeDNS(context.Background(), w, r)
+		if err != nil {
+			t.Fatalf("qtype %d: %v", qtype, err)
+		}
+		if code != dns.RcodeSuccess {
+			t.Errorf("qtype %d: expected NOERROR, got rcode %d", qtype, code)
+		}
+		if len(w.msg.Answer) != 1 {
+			t.Fatalf("qtype %d: expected 1 answer, got %d", qtype, len(w.msg.Answer))
+		}
+		// Both HTTPS and SVCB embed dns.SVCB; extract it uniformly.
+		var svcb *dns.SVCB
+		switch rr := w.msg.Answer[0].(type) {
+		case *dns.HTTPS:
+			if qtype != dns.TypeHTTPS {
+				t.Errorf("qtype %d: got HTTPS record", qtype)
+			}
+			svcb = &rr.SVCB
+		case *dns.SVCB:
+			if qtype != dns.TypeSVCB {
+				t.Errorf("qtype %d: got SVCB record", qtype)
+			}
+			svcb = rr
+		default:
+			t.Fatalf("qtype %d: unexpected record type %T", qtype, w.msg.Answer[0])
+		}
+		if svcb.Priority != 1 {
+			t.Errorf("qtype %d: expected ServiceMode priority 1, got %d", qtype, svcb.Priority)
+		}
+		var gotV4, gotV6 bool
+		for _, kv := range svcb.Value {
+			switch h := kv.(type) {
+			case *dns.SVCBIPv4Hint:
+				gotV4 = true
+				if len(h.Hint) != 1 || !h.Hint[0].Equal(net.IPv4(10, 0, 0, 1)) {
+					t.Errorf("qtype %d: unexpected ipv4hint %v", qtype, h.Hint)
+				}
+			case *dns.SVCBIPv6Hint:
+				gotV6 = true
+				if len(h.Hint) != 1 || !h.Hint[0].Equal(net.ParseIP("::1")) {
+					t.Errorf("qtype %d: unexpected ipv6hint %v", qtype, h.Hint)
+				}
+			}
+		}
+		if !gotV4 || !gotV6 {
+			t.Errorf("qtype %d: expected both ipv4hint and ipv6hint (v4=%v v6=%v)", qtype, gotV4, gotV6)
+		}
+	}
+}
+
+// TestServeDNSBlacklistNullIPConsistentRcode verifies that, for the nullip
+// action, every query type for a blocked name is answered with NOERROR: A/AAAA
+// carry sinkhole address records, HTTPS/SVCB carry a synthesized sinkhole
+// record, and plain other types are NODATA. No query type receives NXDOMAIN, so
+// an RFC 8020-aware resolver cannot negative-cache the name out of existence.
+// See #38.
+func TestServeDNSBlacklistNullIPConsistentRcode(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action: ActionConfig{
+				Mode:     "nullip",
+				NullIPv4: net.IPv4zero,
+				NullIPv6: net.IPv6zero,
+				TTL:      60,
+			},
+		},
+	}
+	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))
+
+	cases := []struct {
+		qtype       uint16
+		wantAnswers int
+	}{
+		{dns.TypeA, 1},
+		{dns.TypeAAAA, 1},
+		{dns.TypeHTTPS, 1},
+		{dns.TypeSVCB, 1},
+		{dns.TypePTR, 0},
+		{dns.TypeTXT, 0},
+	}
+	for _, tc := range cases {
+		w := newMockWriter()
+		r := makeQuery("ads.example.com", tc.qtype)
+		code, err := rf.ServeDNS(context.Background(), w, r)
+		if err != nil {
+			t.Fatalf("qtype %d: %v", tc.qtype, err)
+		}
+		if code != dns.RcodeSuccess {
+			t.Errorf("qtype %d: expected NOERROR across all types, got rcode %d", tc.qtype, code)
+		}
+		if got := len(w.msg.Answer); got != tc.wantAnswers {
+			t.Errorf("qtype %d: expected %d answer records, got %d", tc.qtype, tc.wantAnswers, got)
+		}
+	}
+}
+
+// TestServeDNSNXDOMAINHasSOA verifies that the nxdomain action attaches an
+// authority-section SOA so resolvers can negative-cache the NXDOMAIN (RFC 2308)
+// instead of re-querying aggressively.
+func TestServeDNSNXDOMAINHasSOA(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next: next,
+		Config: Config{
+			Action: ActionConfig{Mode: "nxdomain", TTL: 120},
+		},
+	}
+	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("ads.example.com", dns.TypeA)
+	code, err := rf.ServeDNS(context.Background(), w, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != dns.RcodeNameError {
+		t.Errorf("expected NXDOMAIN, got %d", code)
+	}
+	assertNegativeCachingSOA(t, w.msg, "ads.example.com.", 120)
+}
+
+// TestServeDNSRefuseHasNoSOA verifies that the refuse action does not attach an
+// SOA: REFUSED is a hard rejection, not a cacheable statement about the name.
+func TestServeDNSRefuseHasNoSOA(t *testing.T) {
+	next := &mockNextHandler{}
+	rf := &Plugin{
+		Next:   next,
+		Config: Config{Action: ActionConfig{Mode: "refuse"}},
+	}
+	rf.SetDenylist(buildMatcher(t, []string{"ads.example.com"}))
+
+	w := newMockWriter()
+	r := makeQuery("ads.example.com", dns.TypeA)
+	if _, err := rf.ServeDNS(context.Background(), w, r); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.msg.Ns) != 0 {
+		t.Errorf("expected no authority records for REFUSED, got %d", len(w.msg.Ns))
+	}
+}
+
+// assertNegativeCachingSOA fails the test unless msg carries exactly one
+// authority-section SOA with the given owner name whose TTL and Minttl bound
+// negative caching to wantTTL seconds (RFC 2308).
+func assertNegativeCachingSOA(t *testing.T, msg *dns.Msg, owner string, wantTTL uint32) {
+	t.Helper()
+	if len(msg.Ns) != 1 {
+		t.Fatalf("expected exactly 1 authority record (SOA), got %d", len(msg.Ns))
+	}
+	soa, ok := msg.Ns[0].(*dns.SOA)
+	if !ok {
+		t.Fatalf("expected SOA in authority section, got %T", msg.Ns[0])
+	}
+	if soa.Hdr.Name != owner {
+		t.Errorf("SOA owner = %q, want %q", soa.Hdr.Name, owner)
+	}
+	if soa.Hdr.Ttl != wantTTL {
+		t.Errorf("SOA TTL = %d, want %d", soa.Hdr.Ttl, wantTTL)
+	}
+	if soa.Minttl != wantTTL {
+		t.Errorf("SOA Minttl = %d, want %d", soa.Minttl, wantTTL)
+	}
+}
+
 // TestServeDNSBlacklistRefuse verifies that blocked users can receive REFUSED responses in the CoreDNS plugin path by asserting that a blacklist hit returns dns.RcodeRefused.
 func TestServeDNSBlacklistRefuse(t *testing.T) {
 	next := &mockNextHandler{}

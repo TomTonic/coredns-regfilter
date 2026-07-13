@@ -181,7 +181,7 @@ Those tests assert that:
 | `debounce` | `300ms` | Debounce duration for file change events |
 | `max_states` | `200000` | Maximum wildcard DFA states (limits memory); set `0` to disable this cap |
 | `compile_timeout` | `30s` | Maximum compile duration |
-| `ttl` | `3600` | TTL for blocked responses (nullip) |
+| `ttl` | `3600` | TTL for `nullip` answers and the negative-caching SOA of NXDOMAIN/NODATA responses |
 | `log_queries` | `false` | Log per-query outcome (list matched, name, rule source, pattern) at INFO level |
 | `debug` | — | Deprecated alias for `log_queries`; prefer `log_queries` in new Corefiles |
 | `invert_allowlist` | `false` | Use `\|\|domain^` instead of `@@\|\|domain^` for allowlist entries |
@@ -199,12 +199,15 @@ Those tests assert that:
   - With `invert_allowlist`, allowlist directories compile non-`@@` rules instead, so you can write `||safe.example.com^` to allowlist a domain.
 - Startup stays fail-open if configured directories are unreadable, empty, or contain only unsupported rules.
 - Every initial load and hot-reload writes a detailed compile summary to the CoreDNS log, including directory, outcome, rule count, state count, duration, and any error.
-- `action nxdomain` returns NXDOMAIN for blocked queries.
-- `action refuse` returns REFUSED for blocked queries.
-- `action nullip` returns synthetic `A` and `AAAA` answers for address lookups, and falls back to NXDOMAIN for other query types.
+- `action nxdomain` returns NXDOMAIN for blocked queries, with an authority-section SOA so resolvers can negative-cache the answer (RFC 2308).
+- `action refuse` returns REFUSED for blocked queries. REFUSED is a hard rejection rather than a statement about the name, so it carries no answer and no SOA.
+- `action nullip` returns synthetic answers steering clients to the sinkhole across all query types:
+  - `A` / `AAAA` address lookups return the configured sinkhole IPs.
+  - `HTTPS` (type 65) / `SVCB` (type 64) lookups return a synthesized ServiceMode record whose `ipv4hint`/`ipv6hint` point at the sinkhole IPs. Browsers query HTTPS in parallel with A/AAAA, so this steers them directly instead of relying on A/AAAA fallback.
+  - All other query types (PTR, TXT, MX, SRV, ...) return an empty `NOERROR` response (NODATA) with a negative-caching SOA. NODATA keeps consistent "name exists, no record of this type" semantics: unlike NXDOMAIN it does not assert (per RFC 8020) that the whole name is nonexistent, so RFC 8020-aware resolvers cannot negative-cache the name and thereby poison the A/AAAA sinkhole answers.
 - `nullip` configures the IPv4 sinkhole address.
 - `nullip6` configures the IPv6 sinkhole address.
-- `ttl` is only relevant for `nullip` answers.
+- `ttl` sets the TTL of `nullip` answers and, for every action, the negative-caching lifetime (SOA TTL/Minimum) of NXDOMAIN and NODATA responses. Defaults to `3600` when unset.
 - `debounce`, `max_states`, and `compile_timeout` are operational safeguards for large or volatile filter sets.
 - `max_states 0` disables DFA state capping for wildcard compilation. The plugin logs a warning at startup when uncapped mode is configured.
 - List parser safety limits are enforced per file: maximum physical line length is `8192` bytes and maximum line count is `200000`. Files exceeding those limits are rejected and logged.
