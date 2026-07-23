@@ -8,7 +8,7 @@ require (
 	github.com/coredns/coredns v1.14.6
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/miekg/dns v1.1.72
-	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_golang v1.24.0
 	github.com/prometheus/client_model v0.6.2
 	golang.org/x/net v0.57.0
 )
