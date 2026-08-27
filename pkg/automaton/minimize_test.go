@@ -61,8 +61,7 @@ func TestMinimization(t *testing.T) {
 		{Expr: "a.com"},
 		{Expr: "b.com"},
 	}
-	noMin := boolPtr(false)
-	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: noMin})
+	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +125,7 @@ func TestMinimizationSharesSuffixes(t *testing.T) {
 		{Expr: "b.example.com", RuleID: 1},
 		{Expr: "c.example.com", RuleID: 2},
 	}
-	noMin := boolPtr(false)
-	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: noMin})
+	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +171,7 @@ func TestLargeAutomatonMinimizationEffectiveness(t *testing.T) {
 		rules[i] = Pattern{Expr: fmt.Sprintf("%c%c.example.com", 'a'+rune(i/26%26), 'a'+rune(i%26))}
 	}
 
-	noMin := boolPtr(false)
-	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: noMin})
+	dfaNoMin, err := Compile(rules, CompileOptions{Minimize: new(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
