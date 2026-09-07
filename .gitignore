@@ -34,4 +34,6 @@ go.work.sum
 # .idea/
 .vscode/
 .DS_Store
-.claude/
+# Claude Code: personal machine-specific overrides only; settings.json and
+# .claude/release-notes.yml are project-shared config and stay tracked.
+.claude/settings.local.json
